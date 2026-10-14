@@ -1,0 +1,10 @@
+.env
+.venv/
+.vs/
+__pycache__/
+*.py[cod]
+bot_database.db
+logs/
+.git/
+.pytest_cache/
+tests/

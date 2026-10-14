@@ -218,3 +218,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.env.*
+!.env.example
+.venv/
+.vs/
+bot_database.db
+*.db
+*.sqlite
+*.sqlite3
+logs/
+data/
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
