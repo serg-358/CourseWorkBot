@@ -123,20 +123,93 @@ async def test_unchanged_screen_does_not_break_callback():
 
 
 @pytest.mark.asyncio
-async def test_repeated_start_edits_last_screen_instead_of_sending_another(monkeypatch):
+async def test_repeated_start_sends_a_new_screen(monkeypatch):
     bot = SimpleNamespace(edit_message_text=AsyncMock())
+    sent = SimpleNamespace(chat=SimpleNamespace(id=100), message_id=201)
     message = SimpleNamespace(
         bot=bot,
         chat=SimpleNamespace(id=100),
-        answer=AsyncMock(),
+        answer=AsyncMock(return_value=sent),
     )
-    monkeypatch.setitem(auth._last_screen_by_user, 55, (100, 200))
 
     screen = await auth.show_start_screen(message, 55, "Приветствие")
 
-    assert screen == (100, 200)
-    bot.edit_message_text.assert_awaited_once()
-    message.answer.assert_not_awaited()
+    assert screen == (100, 201)
+    bot.edit_message_text.assert_not_awaited()
+    message.answer.assert_awaited_once_with("Приветствие", reply_markup=None, parse_mode=None)
+
+
+@pytest.mark.asyncio
+async def test_request_creation_sends_a_new_dialog_screen(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    monkeypatch.setattr(auth, "SessionLocal", Session)
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=SimpleNamespace(role="client")),
+    )
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=100),
+        message_id=200,
+        answer=AsyncMock(),
+        edit_text=AsyncMock(),
+    )
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock(), update_data=AsyncMock())
+
+    await auth.start_request_creation(callback, state)
+
+    callback.answer.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    message.edit_text.assert_not_awaited()
+    state.update_data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_request_description_sends_photo_prompt_without_editing_screen():
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=55),
+        text="Компьютер не включается после выключения света.",
+        answer=AsyncMock(),
+        bot=SimpleNamespace(edit_message_text=AsyncMock()),
+    )
+    state = SimpleNamespace(update_data=AsyncMock(), set_state=AsyncMock())
+
+    await auth.process_request_description(message, state)
+
+    message.answer.assert_awaited_once()
+    message.bot.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_request_completion_sends_result_message(monkeypatch):
+    request = SimpleNamespace(
+        id=13,
+        status="new",
+        priority="medium",
+        description="Компьютер не включается после выключения света.",
+        ai_assessment=None,
+    )
+    monkeypatch.setattr(auth, "create_and_analyze_request", AsyncMock(return_value=(request, "client")))
+    message = SimpleNamespace(from_user=SimpleNamespace(id=55), answer=AsyncMock())
+    state = SimpleNamespace(
+        get_data=AsyncMock(return_value={"description": request.description}),
+        clear=AsyncMock(),
+    )
+
+    await auth.finish_request_creation(message, state)
+
+    message.answer.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,17 @@ def dialog_keyboard(menu: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     )
 
 
+def photo_dialog_keyboard(menu: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    """Добавляет возможность завершить заявку без фотографии."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить фото", callback_data="ai:skip-photo")],
+            [InlineKeyboardButton(text="Отмена", callback_data="dialog:cancel")],
+            *menu.inline_keyboard,
+        ]
+    )
+
+
 def request_status_keyboard(request_id: int, current_status: str) -> InlineKeyboardMarkup:
     """Возвращает кнопки смены статуса заявки для мастера и администратора."""
     statuses = (("В работе", "in_progress"), ("Завершена", "completed"), ("Отменить", "cancelled"))
@@ -84,6 +95,7 @@ def request_navigation_keyboard(
     menu: InlineKeyboardMarkup,
     request_id: int | None = None,
     current_status: str | None = None,
+    has_photo: bool = False,
 ) -> InlineKeyboardMarkup:
     """Объединяет листание заявки, действия сотрудника и основное меню."""
     callback_prefix = f"requests:{view}"
@@ -106,5 +118,7 @@ def request_navigation_keyboard(
     rows = [navigation]
     if request_id is not None and current_status is not None:
         rows.extend(request_status_keyboard(request_id, current_status).inline_keyboard)
+    if request_id is not None and has_photo:
+        rows.append([InlineKeyboardButton(text="Фото заявки", callback_data=f"request:photo:{request_id}")])
     rows.extend(menu.inline_keyboard)
     return InlineKeyboardMarkup(inline_keyboard=rows)

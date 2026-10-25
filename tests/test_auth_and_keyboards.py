@@ -1,5 +1,5 @@
 from handlers.auth import normalize_phone, role_for_telegram_id
-from keyboards import main_menu_keyboard
+from keyboards import main_menu_keyboard, photo_dialog_keyboard, request_navigation_keyboard
 
 
 def test_normalize_russian_phone_formats():
@@ -37,3 +37,25 @@ def test_admin_and_master_have_separate_menus():
     }
     assert "menu:all_requests" in master_buttons
     assert "menu:admins" not in master_buttons
+
+
+def test_photo_dialog_has_skip_and_staff_photo_button():
+    dialog_callbacks = {
+        button.callback_data
+        for row in photo_dialog_keyboard(main_menu_keyboard("client")).inline_keyboard
+        for button in row
+    }
+    assert "ai:skip-photo" in dialog_callbacks
+
+    keyboard = request_navigation_keyboard(
+        view="staff",
+        page=0,
+        total_pages=1,
+        menu=main_menu_keyboard("master"),
+        request_id=12,
+        current_status="new",
+        has_photo=True,
+    )
+    assert "request:photo:12" in {
+        button.callback_data for row in keyboard.inline_keyboard for button in row
+    }

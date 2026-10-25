@@ -55,3 +55,34 @@ class RepairRequest(Base):
         DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
     user: Mapped[User] = relationship(back_populates="requests")
+    ai_assessment: Mapped[RepairRequestAiAssessment | None] = relationship(
+        back_populates="request", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class RepairRequestAiAssessment(Base):
+    """Предварительная AI-оценка заявки, отделённая от основной записи."""
+
+    __tablename__ = "repair_request_ai_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("repair_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    photo_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    client_causes: Mapped[str] = mapped_column(Text, nullable=False)
+    client_recommendations: Mapped[str] = mapped_column(Text, nullable=False)
+    safety_note: Mapped[str] = mapped_column(Text, nullable=False)
+    master_diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
+    parts: Mapped[str] = mapped_column(Text, nullable=False)
+    tools: Mapped[str] = mapped_column(Text, nullable=False)
+    catalog_item_codes: Mapped[str] = mapped_column(Text, nullable=False)
+    estimated_cost_kopecks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client_price_kopecks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow
+    )
+    request: Mapped[RepairRequest] = relationship(back_populates="ai_assessment")

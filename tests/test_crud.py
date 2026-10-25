@@ -7,8 +7,10 @@ from crud.requests import (
     get_repair_request,
     get_request_status_counts,
     get_user_requests,
+    save_ai_assessment,
     update_request_status,
 )
+from pricing_catalog import calculate_cost
 from crud.users import (
     create_user,
     delete_user,
@@ -65,3 +67,43 @@ async def test_repair_request_crud_and_status_counts(db_session):
     assert await delete_repair_request(db_session, request.id) is True
     assert await delete_repair_request(db_session, request.id) is False
     assert await get_repair_request(db_session, request.id) is None
+
+
+@pytest.mark.asyncio
+async def test_ai_assessment_is_saved_with_request_and_removed_by_cascade(db_session):
+    user = await create_user(db_session, "1003", "AI Клиент", "+79990000004")
+    request = await create_repair_request(db_session, user.id, "На экране появляется синий экран")
+
+    assessment = await save_ai_assessment(
+        db_session,
+        request.id,
+        priority="high",
+        photo_file_id="telegram-photo-id",
+        client_causes="Сбой памяти или драйвера",
+        client_recommendations="Не перезагружайте компьютер много раз.",
+        safety_note="Не вскрывайте устройство под напряжением.",
+        master_diagnosis="Проверить память и журнал ошибок.",
+        parts="Модуль памяти при подтверждении.",
+        tools="Тестер памяти.",
+        catalog_item_codes="diagnostics,ram_8gb",
+        estimated_cost_kopecks=300000,
+        client_price_kopecks=345000,
+    )
+
+    loaded = await get_repair_request(db_session, request.id)
+    assert assessment is not None
+    assert loaded is not None
+    assert loaded.priority == "high"
+    assert loaded.ai_assessment is not None
+    assert loaded.ai_assessment.photo_file_id == "telegram-photo-id"
+
+    assert await delete_user(db_session, user.id) is True
+    assert await get_repair_request(db_session, request.id) is None
+
+
+def test_catalog_cost_is_deterministic_and_unknown_item_has_no_price():
+    items, cost, price = calculate_cost(["diagnostics", "ram_8gb"])
+    assert [item.code for item in items] == ["diagnostics", "ram_8gb"]
+    assert cost == 300000
+    assert price == 345000
+    assert calculate_cost(["missing"])[1:] == (None, None)
