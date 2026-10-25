@@ -616,7 +616,6 @@ async def start_request_creation(callback: CallbackQuery, state: FSMContext) -> 
         return
     async with SessionLocal() as db:
         user = await get_user_by_telegram_id(db, str(callback.from_user.id))
-        role = user.role if user else "client"
     if not user:
         await callback.answer("Сначала зарегистрируйтесь командой /start.", show_alert=True)
         return

@@ -1,0 +1,3 @@
+# This configuration is loaded only when Codex marks this repository as trusted.
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"

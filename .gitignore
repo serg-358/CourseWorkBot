@@ -230,6 +230,7 @@ bot_database.db
 logs/
 data/
 .pytest_cache/
+.pre-commit-cache/
 .coverage
 htmlcov/
 .hypothesis/

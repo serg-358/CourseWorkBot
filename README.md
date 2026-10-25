@@ -75,6 +75,12 @@ repair_bot/
    python -m pip install -r requirements-dev.txt
    ```
 
+   Для автоматических проверок перед коммитом один раз установите Git hook:
+
+   ```powershell
+   pre-commit install
+   ```
+
 3. Скопируйте `.env.example` в `.env` и задайте значения:
 
    ```dotenv
@@ -101,6 +107,16 @@ python -m pytest -q
 ```
 
 Тесты работают на временной SQLite-базе и не изменяют рабочий `bot_database.db`.
+
+Перед передачей изменений также выполните:
+
+```powershell
+python -m ruff check .
+pre-commit run --all-files
+```
+
+`pre-commit` запускает Ruff и тесты перед каждым коммитом. Если hook не установлен,
+эти же команды остаются доступными для ручной проверки.
 
 ## Запуск через Docker Compose
 
@@ -141,6 +157,8 @@ docker compose down
 - Любое изменение схемы БД требует решения о миграции; `create_all()` не заменяет миграции.
 - После изменений запускайте `python -m ruff check .` и `python -m pytest -q`, сообщайте о непроверенных интеграциях.
 - Не утверждайте, что AI-диагностика, Docker-развёртывание или VPS настроены, если соответствующий код/сервис не реализован и не проверен.
+- Перед изменением пользовательского сценария прочитайте `specs/features/repair-requests.md`; перед изменением схемы — `specs/data/database-schema.md`.
+- Повторяемые рабочие процедуры Codex находятся в `.agents/skills/`, а материал для отчёта о харнесе — в `docs/harness-report.md`.
 
 ## Безопасность
 
