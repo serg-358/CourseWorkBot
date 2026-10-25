@@ -1,7 +1,7 @@
 """Подключение к SQLite и управление сессиями."""
 
-from collections.abc import AsyncGenerator
 import os
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

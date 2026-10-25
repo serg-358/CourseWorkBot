@@ -53,10 +53,13 @@ def main_menu_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def cancel_keyboard() -> InlineKeyboardMarkup:
-    """Показывает компактную кнопку отмены под запросом бота."""
+def dialog_keyboard(menu: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    """Оставляет отмену и разделы меню доступными во время диалога."""
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="dialog:cancel")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отмена", callback_data="dialog:cancel")],
+            *menu.inline_keyboard,
+        ]
     )
 
 
@@ -71,3 +74,37 @@ def request_status_keyboard(request_id: int, current_status: str) -> InlineKeybo
         for label, status in statuses
     ]
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
+def request_navigation_keyboard(
+    *,
+    view: str,
+    page: int,
+    total_pages: int,
+    menu: InlineKeyboardMarkup,
+    request_id: int | None = None,
+    current_status: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Объединяет листание заявки, действия сотрудника и основное меню."""
+    callback_prefix = f"requests:{view}"
+    navigation = []
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton(text="← Предыдущая", callback_data=f"{callback_prefix}:{page - 1}")
+        )
+    navigation.append(
+        InlineKeyboardButton(
+            text=f"{page + 1} / {total_pages}",
+            callback_data=f"requests:page-info:{page + 1}:{total_pages}",
+        )
+    )
+    if page + 1 < total_pages:
+        navigation.append(
+            InlineKeyboardButton(text="Следующая →", callback_data=f"{callback_prefix}:{page + 1}")
+        )
+
+    rows = [navigation]
+    if request_id is not None and current_status is not None:
+        rows.extend(request_status_keyboard(request_id, current_status).inline_keyboard)
+    rows.extend(menu.inline_keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
