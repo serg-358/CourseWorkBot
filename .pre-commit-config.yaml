@@ -5,12 +5,12 @@ repos:
     hooks:
       - id: ruff
         name: Ruff static checks
-        entry: python -m ruff check .
+        entry: ./.venv/Scripts/python.exe -m ruff check .
         language: system
         pass_filenames: false
         types: [python]
       - id: pytest
         name: Pytest
-        entry: python -m pytest -q
+        entry: ./.venv/Scripts/python.exe -m pytest -q
         language: system
         pass_filenames: false

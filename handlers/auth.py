@@ -735,6 +735,11 @@ async def finish_request_creation(
         await message.answer("Сначала зарегистрируйтесь командой /start.")
         return
     text = f"✅ Заявка №{request.id} создана.\n\n{client_request_text(request)}"
+    if getattr(request, "ai_assessment", None) is None:
+        text += (
+            "\n\n⚠️ Предварительная AI-оценка сейчас недоступна. "
+            "Заявка передана мастеру, который уточнит причину и стоимость."
+        )
     if request.ai_assessment is None:
         text += "\n\nПредварительная AI-оценка сейчас недоступна; заявку рассмотрит мастер."
     await message.answer(text, reply_markup=menu_for_user(actor_id, role), parse_mode="HTML")

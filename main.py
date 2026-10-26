@@ -1,10 +1,12 @@
 """Точка входа Telegram-бота."""
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramNetworkError
 from dotenv import load_dotenv
 
 # Загружаем настройки до импорта модулей, читающих переменные окружения.
@@ -13,6 +15,9 @@ load_dotenv(PROJECT_DIR / ".env")
 
 from database import DATABASE_PATH, create_tables, engine
 from fsm_storage import SQLiteFSMStorage
+
+logger = logging.getLogger(__name__)
+POLLING_RETRY_DELAY_SECONDS = 5
 
 
 async def main() -> None:
@@ -33,7 +38,16 @@ async def main() -> None:
     dispatcher.include_router(auth_router)
 
     try:
-        await dispatcher.start_polling(bot)
+        while True:
+            try:
+                await dispatcher.start_polling(bot)
+                break
+            except TelegramNetworkError:
+                logger.exception(
+                    "Не удалось подключиться к Telegram. Повтор через %s секунд.",
+                    POLLING_RETRY_DELAY_SECONDS,
+                )
+                await asyncio.sleep(POLLING_RETRY_DELAY_SECONDS)
     finally:
         await storage.close()
         await bot.session.close()
