@@ -77,7 +77,7 @@ def prepare_ai_photo(photo_bytes: bytes) -> bytes:
 
 async def analyze_repair_request(description: str, photo_bytes: bytes | None = None) -> AiResult | None:
     """Анализирует обезличенное описание и необязательное фото; ошибки отдаёт вызывающему коду."""
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("KODIKROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
     from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
@@ -89,19 +89,38 @@ async def analyze_repair_request(description: str, photo_bytes: bytes | None = N
         "на русском. Не советуй опасные действия, работу под напряжением или разборку без мастера. "
         f"Выбирай коды только из каталога: {catalog}. Описание: {description}"
     )
-    content: list[dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
     if photo_bytes:
         encoded = base64.b64encode(prepare_ai_photo(photo_bytes)).decode("ascii")
-        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}", "detail": "low"})
-    client = AsyncOpenAI(api_key=api_key, max_retries=0)
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{encoded}",
+                    "detail": "high",
+                },
+            }
+        )
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=os.getenv("KODIKROUTER_BASE_URL", "https://api.kodikrouter.ru/v1"),
+        max_retries=0,
+    )
     try:
         for attempt in range(2):
             try:
                 response = await asyncio.wait_for(
-                    client.responses.create(
-                        model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini"),
-                        input=[{"role": "user", "content": content}],
-                        text={"format": {"type": "json_schema", "name": "repair_assessment", "strict": True, "schema": _SCHEMA}},
+                    client.chat.completions.create(
+                        model=os.getenv("KODIKROUTER_MODEL", "openai/gpt-5.4-mini"),
+                        messages=[{"role": "user", "content": content}],
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "repair_assessment",
+                                "strict": True,
+                                "schema": _SCHEMA,
+                            },
+                        },
                     ),
                     timeout=AI_TIMEOUT_SECONDS,
                 )
@@ -113,7 +132,10 @@ async def analyze_repair_request(description: str, photo_bytes: bytes | None = N
             raise RuntimeError("AI request did not finish")
     finally:
         await client.close()
-    data = json.loads(response.output_text)
+    response_text = response.choices[0].message.content
+    if not response_text:
+        raise ValueError("AI returned an empty assessment")
+    data = json.loads(response_text)
     codes = data["catalog_item_codes"]
     if data["priority"] not in VALID_PRIORITIES or not isinstance(codes, list):
         raise ValueError("AI returned an invalid assessment")
