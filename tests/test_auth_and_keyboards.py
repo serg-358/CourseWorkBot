@@ -26,21 +26,24 @@ def test_roles_come_from_separate_allowlists(monkeypatch):
 
 def test_admin_and_master_have_separate_menus():
     admin_buttons = {
-        button.callback_data
+        button.callback_data: button.text
         for row in main_menu_keyboard("admin", allow_role_switch=True).inline_keyboard
         for button in row
     }
     assert "menu:admins" in admin_buttons
     assert "view:master" in admin_buttons
     assert "menu:all_requests" not in admin_buttons
+    assert admin_buttons["menu:admins"] == "🛡 Администраторы"
+    assert admin_buttons["view:master"] == "🛠 Открыть панель мастера"
 
     master_buttons = {
-        button.callback_data
+        button.callback_data: button.text
         for row in main_menu_keyboard("master").inline_keyboard
         for button in row
     }
     assert "menu:all_requests" in master_buttons
     assert "menu:admins" not in master_buttons
+    assert master_buttons["menu:all_requests"] == "🧾 Заявки на ремонт"
 
 
 def test_photo_dialog_has_skip_and_staff_photo_button():
@@ -50,6 +53,12 @@ def test_photo_dialog_has_skip_and_staff_photo_button():
         for button in row
     }
     assert "ai:skip-photo" in dialog_callbacks
+    assert next(
+        button.text
+        for row in photo_dialog_keyboard(main_menu_keyboard("client")).inline_keyboard
+        for button in row
+        if button.callback_data == "ai:skip-photo"
+    ) == "🖼️ Пропустить фото"
 
     keyboard = request_navigation_keyboard(
         view="staff",

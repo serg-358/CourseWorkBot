@@ -16,39 +16,39 @@ def main_menu_keyboard(
     if role == "admin":
         rows = [
             [
-                InlineKeyboardButton(text="Клиенты", callback_data="menu:users:client"),
-                InlineKeyboardButton(text="Мастера", callback_data="menu:users:master"),
+                InlineKeyboardButton(text="👥 Клиенты", callback_data="menu:users:client"),
+                InlineKeyboardButton(text="🛠 Мастера", callback_data="menu:users:master"),
             ],
-            [InlineKeyboardButton(text="Администраторы", callback_data="menu:admins")],
-            [InlineKeyboardButton(text="Статистика", callback_data="menu:statistics")],
-            [InlineKeyboardButton(text="Профиль", callback_data="menu:profile")],
+            [InlineKeyboardButton(text="🛡 Администраторы", callback_data="menu:admins")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:statistics")],
+            [InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")],
         ]
     elif role == "master":
         rows = [
-            [InlineKeyboardButton(text="Заявки на ремонт", callback_data="menu:all_requests")],
-            [InlineKeyboardButton(text="Профиль", callback_data="menu:profile")],
+            [InlineKeyboardButton(text="🧾 Заявки на ремонт", callback_data="menu:all_requests")],
+            [InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")],
         ]
     else:
         rows = [
             [
-                InlineKeyboardButton(text="Мои заявки", callback_data="menu:requests"),
-                InlineKeyboardButton(text="Создать заявку", callback_data="menu:create"),
+                InlineKeyboardButton(text="🧾 Мои заявки", callback_data="menu:requests"),
+                InlineKeyboardButton(text="➕ Создать заявку", callback_data="menu:create"),
             ],
-            [InlineKeyboardButton(text="Профиль", callback_data="menu:profile")],
+            [InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")],
         ]
 
     if allow_role_switch:
         if demo_role:
             rows.append([
                 InlineKeyboardButton(
-                    text="Вернуться в панель администратора",
+                    text="↩️ Вернуться в панель администратора",
                     callback_data="view:admin",
                 )
             ])
         elif role == "admin":
             rows.extend([
-                [InlineKeyboardButton(text="Открыть панель мастера", callback_data="view:master")],
-                [InlineKeyboardButton(text="Посмотреть меню клиента", callback_data="view:client")],
+                [InlineKeyboardButton(text="🛠 Открыть панель мастера", callback_data="view:master")],
+                [InlineKeyboardButton(text="👀 Посмотреть меню клиента", callback_data="view:client")],
             ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -57,7 +57,7 @@ def dialog_keyboard(menu: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     """Оставляет отмену и разделы меню доступными во время диалога."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Отмена", callback_data="dialog:cancel")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="dialog:cancel")],
             *menu.inline_keyboard,
         ]
     )
@@ -67,8 +67,8 @@ def photo_dialog_keyboard(menu: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     """Добавляет возможность завершить заявку без фотографии."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Пропустить фото", callback_data="ai:skip-photo")],
-            [InlineKeyboardButton(text="Отмена", callback_data="dialog:cancel")],
+            [InlineKeyboardButton(text="🖼️ Пропустить фото", callback_data="ai:skip-photo")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="dialog:cancel")],
             *menu.inline_keyboard,
         ]
     )
@@ -76,7 +76,7 @@ def photo_dialog_keyboard(menu: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
 
 def request_status_keyboard(request_id: int, current_status: str) -> InlineKeyboardMarkup:
     """Возвращает кнопки смены статуса заявки для мастера и администратора."""
-    statuses = (("В работе", "in_progress"), ("Завершена", "completed"), ("Отменить", "cancelled"))
+    statuses = (("🔧 В работе", "in_progress"), ("✅ Завершена", "completed"), ("❌ Отменить", "cancelled"))
     buttons = [
         InlineKeyboardButton(
             text=f"✓ {label}" if status == current_status else label,
@@ -120,12 +120,12 @@ def request_navigation_keyboard(
     if request_id is not None and current_status is not None:
         rows.extend(request_status_keyboard(request_id, current_status).inline_keyboard)
     if request_id is not None and has_photo:
-        rows.append([InlineKeyboardButton(text="Фото заявки", callback_data=f"request:photo:{request_id}")])
+        rows.append([InlineKeyboardButton(text="🖼️ Фото заявки", callback_data=f"request:photo:{request_id}")])
     if request_id is not None and can_append_description:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="Дополнить описание",
+                    text="✏️ Дополнить описание",
                     callback_data=f"request:append:{request_id}",
                 )
             ]

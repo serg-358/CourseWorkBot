@@ -61,12 +61,12 @@ def test_ai_assessment_text_is_split_into_readable_blocks():
     client_text = auth.client_request_text(request)
     master_text = auth.admin_request_text(request)
 
-    assert "<b>Возможные причины</b>\nСбой памяти\n\n" in client_text
-    assert "<b>Безопасные рекомендации</b>" in client_text
-    assert "<b>Ориентировочная цена</b>\n2 500 ₽" in client_text
-    assert "<b>Предварительная причина</b>\nПроверить модули памяти.\n\n" in master_text
-    assert "<b>Детали для проверки</b>" in master_text
-    assert "<b>Расчёт</b>\nСебестоимость: 2 000 ₽" in master_text
+    assert "<b>🔎 Возможные причины</b>\nСбой памяти\n\n" in client_text
+    assert "<b>🛡 Безопасные рекомендации</b>" in client_text
+    assert "<b>💰 Ориентировочная цена</b>\n2 500 ₽" in client_text
+    assert "<b>🔎 Предварительная причина</b>\nПроверить модули памяти.\n\n" in master_text
+    assert "<b>🧩 Детали для проверки</b>" in master_text
+    assert "<b>💰 Расчёт</b>\nСебестоимость: 2 000 ₽" in master_text
 
 
 def test_open_client_request_has_append_description_action():
@@ -325,7 +325,7 @@ async def test_request_addition_rejects_non_owner_callback(monkeypatch):
 
     await auth.start_request_addition(callback, state)
 
-    callback.answer.assert_awaited_once_with("Заявка не найдена.", show_alert=True)
+    callback.answer.assert_awaited_once_with("📭 Заявка не найдена.", show_alert=True)
     state.set_state.assert_not_awaited()
 
 
@@ -402,9 +402,63 @@ async def test_cancel_addition_returns_to_same_request(monkeypatch):
 
     await auth.cancel_button(callback, state)
 
-    callback.answer.assert_awaited_once_with("Дополнение отменено.")
+    callback.answer.assert_awaited_once_with("↩️ Дополнение отменено.")
     assert "Заявка №13" in message.edit_text.await_args.args[0]
     assert message.edit_text.await_args.kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_cancel_button_deletes_new_dialog_message():
+    message = SimpleNamespace(delete=AsyncMock(), edit_text=AsyncMock())
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(
+        get_state=AsyncMock(return_value=auth.RequestStates.waiting_description.state),
+        get_data=AsyncMock(return_value={}),
+        clear=AsyncMock(),
+    )
+
+    await auth.cancel_button(callback, state)
+
+    callback.answer.assert_awaited_once_with("↩️ Действие отменено.")
+    message.delete.assert_awaited_once()
+    message.edit_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_button_keeps_registration_screen(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    monkeypatch.setattr(auth, "SessionLocal", Session)
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=SimpleNamespace(role="client")),
+    )
+    message = SimpleNamespace(delete=AsyncMock(), edit_text=AsyncMock())
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(
+        get_state=AsyncMock(return_value=auth.RegistrationStates.waiting_full_name.state),
+        get_data=AsyncMock(return_value={"screen_chat_id": 100, "screen_message_id": 200}),
+        clear=AsyncMock(),
+    )
+
+    await auth.cancel_button(callback, state)
+
+    message.edit_text.assert_awaited_once()
+    message.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -544,5 +598,5 @@ async def test_legacy_status_callback_updates_same_card_and_notifies_owner(monke
     await auth.change_request_status(callback, bot)
 
     callback.message.edit_text.assert_awaited_once()
-    bot.send_message.assert_awaited_once_with("77", "Ваша заявка принята в работу.")
+    bot.send_message.assert_awaited_once_with("77", "🔧 Ваша заявка принята в работу.")
     assert "Заявка 1 из 1" in callback.message.edit_text.await_args.args[0]
