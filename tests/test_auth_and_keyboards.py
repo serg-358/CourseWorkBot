@@ -1,5 +1,9 @@
 from handlers.auth import normalize_phone, role_for_telegram_id
-from keyboards import main_menu_keyboard, photo_dialog_keyboard, request_navigation_keyboard
+from keyboards import (
+    main_menu_keyboard,
+    photo_dialog_keyboard,
+    request_navigation_keyboard,
+)
 
 
 def test_normalize_russian_phone_formats():

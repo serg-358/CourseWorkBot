@@ -14,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from crud.requests import (
+    append_request_description,
     create_repair_request,
     get_all_requests,
     get_repair_request,
@@ -38,6 +39,10 @@ from pricing_catalog import calculate_cost
 router = Router(name="auth")
 logger = logging.getLogger(__name__)
 REQUESTS_PER_PAGE = 1
+MAX_REQUEST_DESCRIPTION_LENGTH = 4000
+REQUEST_DESCRIPTION_PREVIEW_LENGTH = 2500
+REQUEST_ADDITION_PREFIX = "\n\nДополнение клиента:\n"
+CLIENT_EDITABLE_STATUSES = {"new", "in_progress"}
 
 # Защищаем от повторной обработки одного и того же Telegram-сообщения /start.
 _processed_start_messages: dict[tuple[int, int], float] = {}
@@ -124,7 +129,7 @@ def admin_request_text(request: RepairRequest) -> str:
         f"Телефон: {html.escape(request.user.phone)}\n"
         f"Приоритет: {priority_labels.get(request.priority, request.priority)}\n"
         f"Статус: {status_labels.get(request.status, request.status)}\n\n"
-        f"{html.escape(request.description[:2500])}"
+        f"{html.escape(request_description_preview(request.description))}"
     )
     assessment = getattr(request, "ai_assessment", None)
     if assessment is None:
@@ -133,10 +138,12 @@ def admin_request_text(request: RepairRequest) -> str:
     price = format_rubles(assessment.client_price_kopecks)
     urgency = {"low": "Плановая", "medium": "В ближайшее время", "high": "Срочная"}.get(request.priority, request.priority)
     return (
-        f"{text}\n\n<b>Предварительная оценка ИИ</b>\nСрочность: {urgency}\n"
-        f"Причина: {html.escape(assessment.master_diagnosis)}\n"
-        f"Детали: {html.escape(assessment.parts)}\nИнструменты: {html.escape(assessment.tools)}\n"
-        f"Себестоимость: {cost}\nЦена для клиента: {price}"
+        f"{text}\n\n<b>Предварительная оценка ИИ</b>\n\n"
+        f"<b>Срочность</b>\n{urgency}\n\n"
+        f"<b>Предварительная причина</b>\n{html.escape(assessment.master_diagnosis)}\n\n"
+        f"<b>Детали для проверки</b>\n{html.escape(assessment.parts)}\n\n"
+        f"<b>Инструменты</b>\n{html.escape(assessment.tools)}\n\n"
+        f"<b>Расчёт</b>\nСебестоимость: {cost}\nЦена для клиента: {price}"
     )
 
 
@@ -153,18 +160,18 @@ def client_request_text(request: RepairRequest) -> str:
         f"🧾 <b>Заявка №{request.id}</b>\n"
         f"Статус: {status_labels.get(request.status, request.status)}\n"
         f"Приоритет: {priority_labels.get(request.priority, request.priority)}\n\n"
-        f"{html.escape(request.description[:2500])}"
+        f"{html.escape(request_description_preview(request.description))}"
     )
     assessment = getattr(request, "ai_assessment", None)
     if assessment is None:
         return text
     price = format_rubles(assessment.client_price_kopecks)
     return (
-        f"{text}\n\n<b>Предварительная оценка ИИ</b>\n"
-        f"Возможные причины: {html.escape(assessment.client_causes)}\n"
-        f"Рекомендации: {html.escape(assessment.client_recommendations)}\n"
-        f"{html.escape(assessment.safety_note)}\n"
-        f"Ориентировочная цена: {price}\n"
+        f"{text}\n\n<b>Предварительная оценка ИИ</b>\n\n"
+        f"<b>Возможные причины</b>\n{html.escape(assessment.client_causes)}\n\n"
+        f"<b>Безопасные рекомендации</b>\n{html.escape(assessment.client_recommendations)}\n\n"
+        f"⚠️ {html.escape(assessment.safety_note)}\n\n"
+        f"<b>Ориентировочная цена</b>\n{price}\n\n"
         "Точный диагноз и цену подтвердит мастер."
     )
 
@@ -174,6 +181,13 @@ def format_rubles(kopecks: int | None) -> str:
     if kopecks is None:
         return "определит мастер после диагностики"
     return f"{kopecks / 100:,.2f} ₽".replace(",", " ").replace(".00", "")
+
+
+def request_description_preview(description: str) -> str:
+    """Сохраняет последнее уточнение видимым в ограниченной карточке Telegram."""
+    if len(description) <= REQUEST_DESCRIPTION_PREVIEW_LENGTH:
+        return description
+    return f"…{description[-(REQUEST_DESCRIPTION_PREVIEW_LENGTH - 1):]}"
 
 
 async def edit_callback_screen(
@@ -312,7 +326,39 @@ async def cancel_command(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "dialog:cancel")
 async def cancel_button(callback: CallbackQuery, state: FSMContext) -> None:
+    current_state = await state.get_state()
+    state_data = await state.get_data()
     await state.clear()
+    if (
+        current_state == RequestStates.waiting_addition.state
+        and callback.from_user
+        and callback.message
+        and isinstance(state_data.get("request_id"), int)
+    ):
+        request_id = state_data["request_id"]
+        async with SessionLocal() as db:
+            user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+            requests = await get_user_requests(db, user.id) if user else []
+        page = next((index for index, item in enumerate(requests) if item.id == request_id), None)
+        if page is not None:
+            request = requests[page]
+            _, total_pages = bounded_page(page, len(requests))
+            await callback.answer("Дополнение отменено.")
+            await edit_callback_screen(
+                callback,
+                client_request_text(request),
+                reply_markup=request_navigation_keyboard(
+                    view="client",
+                    page=page,
+                    total_pages=total_pages,
+                    menu=menu_for_user(callback.from_user.id, user.role),
+                    request_id=request.id,
+                    can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
+                ),
+                parse_mode="HTML",
+            )
+            return
+
     await callback.answer("Действие отменено.")
     if callback.message:
         role = "client"
@@ -602,6 +648,8 @@ async def show_my_requests(callback: CallbackQuery, state: FSMContext) -> None:
             page=page,
             total_pages=total_pages,
             menu=menu_for_user(callback.from_user.id, role),
+            request_id=request.id,
+            can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
         )
     await edit_callback_screen(callback, text, reply_markup=markup, parse_mode="HTML")
 
@@ -632,6 +680,36 @@ async def start_request_creation(callback: CallbackQuery, state: FSMContext) -> 
     await callback.message.answer(
         "Опишите неисправность компьютера. Мастер увидит это описание в заявке.",
         reply_markup=dialog_keyboard(menu_for_user(callback.from_user.id, role)),
+    )
+
+
+@router.callback_query(F.data.startswith("request:append:"))
+async def start_request_addition(callback: CallbackQuery, state: FSMContext) -> None:
+    """Начинает добавление клиентом деталей к собственной открытой заявке."""
+    if callback.from_user is None or callback.message is None:
+        return
+    match = re.fullmatch(r"request:append:(\d+)", callback.data or "")
+    if match is None:
+        await callback.answer("Некорректная заявка.", show_alert=True)
+        return
+    request_id = int(match.group(1))
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        request = await get_repair_request(db, request_id)
+    if user is None or request is None or request.user_id != user.id:
+        await callback.answer("Заявка не найдена.", show_alert=True)
+        return
+    if request.status not in CLIENT_EDITABLE_STATUSES:
+        await callback.answer("Эту заявку уже нельзя дополнить.", show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(request_id=request_id)
+    await state.set_state(RequestStates.waiting_addition)
+    await callback.answer()
+    await edit_callback_screen(
+        callback,
+        "Напишите детали, которые хотите добавить к описанию заявки.",
+        reply_markup=dialog_keyboard(menu_for_user(callback.from_user.id, user.role)),
     )
 
 
@@ -666,6 +744,81 @@ async def process_non_text_description(message: Message, state: FSMContext) -> N
         "Отправьте описание неисправности текстом или нажмите «Отмена».",
         reply_markup=dialog_keyboard(menu),
     )
+
+
+@router.message(RequestStates.waiting_addition, F.text)
+async def process_request_addition(message: Message, state: FSMContext) -> None:
+    """Проверяет и сохраняет дополнение к заявке клиента."""
+    if message.from_user is None:
+        return
+    addition = (message.text or "").strip()
+    if not addition:
+        await message.answer("Отправьте непустое текстовое дополнение или нажмите «Отмена».")
+        return
+    data = await state.get_data()
+    request_id = data.get("request_id")
+    if not isinstance(request_id, int):
+        await state.clear()
+        await message.answer("Начните добавление деталей заново через «Мои заявки».")
+        return
+
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(message.from_user.id))
+        request = await get_repair_request(db, request_id)
+        if user is None or request is None or request.user_id != user.id:
+            saved_request = None
+            requests = []
+        elif request.status not in CLIENT_EDITABLE_STATUSES:
+            saved_request = None
+            requests = []
+        else:
+            remaining = (
+                MAX_REQUEST_DESCRIPTION_LENGTH
+                - len(request.description)
+                - len(REQUEST_ADDITION_PREFIX)
+            )
+            if len(addition) > remaining:
+                await message.answer(
+                    "Дополнение не сохранено: доступно символов: "
+                    f"{max(0, remaining)}."
+                )
+                return
+            saved_request = await append_request_description(
+                db,
+                request.id,
+                f"{REQUEST_ADDITION_PREFIX}{addition}",
+            )
+            if saved_request is not None:
+                saved_request = await get_repair_request(db, saved_request.id)
+            requests = await get_user_requests(db, user.id)
+
+    if saved_request is None:
+        await state.clear()
+        await message.answer("Эту заявку уже нельзя дополнить. Откройте «Мои заявки».")
+        return
+
+    await state.clear()
+    page = next((index for index, item in enumerate(requests) if item.id == saved_request.id), 0)
+    _, total_pages = bounded_page(page, len(requests))
+    await message.answer(
+        f"✅ Дополнение к заявке №{saved_request.id} сохранено.\n\n"
+        f"{client_request_text(saved_request)}",
+        reply_markup=request_navigation_keyboard(
+            view="client",
+            page=page,
+            total_pages=total_pages,
+            menu=menu_for_user(message.from_user.id, user.role),
+            request_id=saved_request.id,
+            can_append_description=True,
+        ),
+        parse_mode="HTML",
+    )
+
+
+@router.message(RequestStates.waiting_addition)
+async def process_non_text_addition(message: Message) -> None:
+    """Не даёт сохранить вложения вместо текстового уточнения."""
+    await message.answer("Отправьте детали текстом или нажмите «Отмена».")
 
 
 async def create_and_analyze_request(
@@ -740,9 +893,15 @@ async def finish_request_creation(
             "\n\n⚠️ Предварительная AI-оценка сейчас недоступна. "
             "Заявка передана мастеру, который уточнит причину и стоимость."
         )
-    if request.ai_assessment is None:
-        text += "\n\nПредварительная AI-оценка сейчас недоступна; заявку рассмотрит мастер."
     await message.answer(text, reply_markup=menu_for_user(actor_id, role), parse_mode="HTML")
+
+
+async def delete_ai_progress_message(progress_message: Message) -> None:
+    """Удаляет временный индикатор обработки, не прерывая сценарий заявки."""
+    try:
+        await progress_message.delete()
+    except TelegramAPIError:
+        logger.info("Не удалось удалить сообщение об ИИ-оценке заявки.")
 
 
 @router.callback_query(RequestStates.waiting_photo, F.data == "ai:skip-photo")
@@ -751,7 +910,11 @@ async def skip_request_photo(callback: CallbackQuery, state: FSMContext) -> None
     if callback.from_user is None or callback.message is None:
         return
     await callback.answer()
-    await finish_request_creation(callback.message, state, telegram_id=callback.from_user.id)
+    progress_message = await callback.message.answer("🤖 Проводим ИИ-оценку заявки…")
+    try:
+        await finish_request_creation(callback.message, state, telegram_id=callback.from_user.id)
+    finally:
+        await delete_ai_progress_message(progress_message)
 
 
 @router.message(RequestStates.waiting_photo, F.photo)
@@ -761,16 +924,20 @@ async def process_request_photo(message: Message, state: FSMContext) -> None:
     if photo.file_size and photo.file_size > 10 * 1024 * 1024:
         await message.answer("Фото больше 10 МБ. Пришлите меньшее фото или пропустите этот шаг.")
         return
+    progress_message = await message.answer("🤖 Проводим ИИ-оценку заявки…")
     try:
-        telegram_file = await message.bot.get_file(photo.file_id)
-        downloaded = await message.bot.download_file(telegram_file.file_path)
-        photo_bytes = downloaded.getvalue() if isinstance(downloaded, BytesIO) else None
-    except TelegramAPIError:
-        await message.answer("Не удалось получить фото. Попробуйте ещё раз или пропустите этот шаг.")
-        return
-    await finish_request_creation(
-        message, state, photo_file_id=photo.file_id, photo_bytes=photo_bytes
-    )
+        try:
+            telegram_file = await message.bot.get_file(photo.file_id)
+            downloaded = await message.bot.download_file(telegram_file.file_path)
+            photo_bytes = downloaded.getvalue() if isinstance(downloaded, BytesIO) else None
+        except TelegramAPIError:
+            await message.answer("Не удалось получить фото. Попробуйте ещё раз или пропустите этот шаг.")
+            return
+        await finish_request_creation(
+            message, state, photo_file_id=photo.file_id, photo_bytes=photo_bytes
+        )
+    finally:
+        await delete_ai_progress_message(progress_message)
 
 
 @router.message(RequestStates.waiting_photo)

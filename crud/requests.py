@@ -78,6 +78,19 @@ async def update_request_status(
     return request
 
 
+async def append_request_description(
+    db: AsyncSession, request_id: int, addition: str
+) -> RepairRequest | None:
+    """Дописывает подготовленное уточнение к описанию заявки."""
+    request = await db.get(RepairRequest, request_id)
+    if request is None:
+        return None
+    request.description = f"{request.description}{addition}"
+    await db.commit()
+    await db.refresh(request)
+    return request
+
+
 async def save_ai_assessment(
     db: AsyncSession,
     request_id: int,

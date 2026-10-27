@@ -96,6 +96,7 @@ def request_navigation_keyboard(
     request_id: int | None = None,
     current_status: str | None = None,
     has_photo: bool = False,
+    can_append_description: bool = False,
 ) -> InlineKeyboardMarkup:
     """Объединяет листание заявки, действия сотрудника и основное меню."""
     callback_prefix = f"requests:{view}"
@@ -120,5 +121,14 @@ def request_navigation_keyboard(
         rows.extend(request_status_keyboard(request_id, current_status).inline_keyboard)
     if request_id is not None and has_photo:
         rows.append([InlineKeyboardButton(text="Фото заявки", callback_data=f"request:photo:{request_id}")])
+    if request_id is not None and can_append_description:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Дополнить описание",
+                    callback_data=f"request:append:{request_id}",
+                )
+            ]
+        )
     rows.extend(menu.inline_keyboard)
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -1,6 +1,7 @@
 import pytest
 
 from crud.requests import (
+    append_request_description,
     create_repair_request,
     delete_repair_request,
     get_all_requests,
@@ -67,6 +68,25 @@ async def test_repair_request_crud_and_status_counts(db_session):
     assert await delete_repair_request(db_session, request.id) is True
     assert await delete_repair_request(db_session, request.id) is False
     assert await get_repair_request(db_session, request.id) is None
+
+
+@pytest.mark.asyncio
+async def test_append_request_description_preserves_existing_text(db_session):
+    user = await create_user(db_session, "1004", "Мария", "+79990000004")
+    request = await create_repair_request(db_session, user.id, "Компьютер выключается сам.")
+
+    updated = await append_request_description(
+        db_session,
+        request.id,
+        "\n\nДополнение клиента:\nПроблема появилась после обновления Windows.",
+    )
+
+    assert updated is not None
+    assert updated.description == (
+        "Компьютер выключается сам.\n\nДополнение клиента:\n"
+        "Проблема появилась после обновления Windows."
+    )
+    assert await append_request_description(db_session, -1, "Деталь") is None
 
 
 @pytest.mark.asyncio

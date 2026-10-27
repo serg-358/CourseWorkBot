@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from io import BytesIO
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
@@ -35,6 +36,55 @@ def test_client_navigation_keeps_main_menu_and_clamps_buttons():
     assert "requests:client:-1" not in callbacks
     assert "menu:create" in callbacks
     assert "menu:profile" in callbacks
+
+
+def test_ai_assessment_text_is_split_into_readable_blocks():
+    assessment = SimpleNamespace(
+        client_causes="Сбой памяти",
+        client_recommendations="Сохраните данные и выключите компьютер.",
+        safety_note="Не разбирайте устройство под напряжением.",
+        master_diagnosis="Проверить модули памяти.",
+        parts="Модуль RAM",
+        tools="Тестер памяти",
+        estimated_cost_kopecks=200000,
+        client_price_kopecks=250000,
+    )
+    request = SimpleNamespace(
+        id=42,
+        status="new",
+        priority="high",
+        description="Компьютер не включается.",
+        user=SimpleNamespace(full_name="Клиент", phone="+79990000000"),
+        ai_assessment=assessment,
+    )
+
+    client_text = auth.client_request_text(request)
+    master_text = auth.admin_request_text(request)
+
+    assert "<b>Возможные причины</b>\nСбой памяти\n\n" in client_text
+    assert "<b>Безопасные рекомендации</b>" in client_text
+    assert "<b>Ориентировочная цена</b>\n2 500 ₽" in client_text
+    assert "<b>Предварительная причина</b>\nПроверить модули памяти.\n\n" in master_text
+    assert "<b>Детали для проверки</b>" in master_text
+    assert "<b>Расчёт</b>\nСебестоимость: 2 000 ₽" in master_text
+
+
+def test_open_client_request_has_append_description_action():
+    keyboard = request_navigation_keyboard(
+        view="client",
+        page=0,
+        total_pages=1,
+        menu=main_menu_keyboard("client"),
+        request_id=42,
+        can_append_description=True,
+    )
+
+    callbacks = {
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    }
+    assert "request:append:42" in callbacks
 
 
 def test_staff_card_has_status_actions_and_menu():
@@ -192,6 +242,172 @@ async def test_request_description_sends_photo_prompt_without_editing_screen():
 
 
 @pytest.mark.asyncio
+async def test_request_addition_saves_to_owner_request(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    user = SimpleNamespace(id=7, role="client")
+    request = SimpleNamespace(
+        id=13,
+        user_id=7,
+        status="new",
+        priority="medium",
+        description="Компьютер не включается после выключения света.",
+        ai_assessment=None,
+    )
+    updated_request = SimpleNamespace(
+        id=13,
+        user_id=7,
+        status="new",
+        priority="medium",
+        description=(
+            "Компьютер не включается после выключения света.\n\n"
+            "Дополнение клиента:\nПеред этим был запах гари."
+        ),
+        ai_assessment=None,
+    )
+    monkeypatch.setattr(auth, "SessionLocal", Session)
+    monkeypatch.setattr(auth, "get_user_by_telegram_id", AsyncMock(return_value=user))
+    monkeypatch.setattr(
+        auth,
+        "get_repair_request",
+        AsyncMock(side_effect=[request, updated_request]),
+    )
+    append = AsyncMock(return_value=updated_request)
+    monkeypatch.setattr(auth, "append_request_description", append)
+    monkeypatch.setattr(auth, "get_user_requests", AsyncMock(return_value=[updated_request]))
+    message = SimpleNamespace(from_user=SimpleNamespace(id=55), text="Перед этим был запах гари.", answer=AsyncMock())
+    state = SimpleNamespace(get_data=AsyncMock(return_value={"request_id": 13}), clear=AsyncMock())
+
+    await auth.process_request_addition(message, state)
+
+    append.assert_awaited_once()
+    assert append.await_args.args[1:] == (
+        13,
+        "\n\nДополнение клиента:\nПеред этим был запах гари.",
+    )
+    state.clear.assert_awaited_once()
+    assert "Дополнение к заявке №13 сохранено" in message.answer.await_args.args[0]
+    assert "Перед этим был запах гари." in message.answer.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_request_addition_rejects_non_owner_callback(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    monkeypatch.setattr(auth, "SessionLocal", Session)
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=SimpleNamespace(id=7, role="client")),
+    )
+    monkeypatch.setattr(
+        auth,
+        "get_repair_request",
+        AsyncMock(return_value=SimpleNamespace(user_id=8, status="new")),
+    )
+    callback = SimpleNamespace(
+        data="request:append:13",
+        from_user=SimpleNamespace(id=55),
+        message=SimpleNamespace(answer=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(clear=AsyncMock(), update_data=AsyncMock(), set_state=AsyncMock())
+
+    await auth.start_request_addition(callback, state)
+
+    callback.answer.assert_awaited_once_with("Заявка не найдена.", show_alert=True)
+    state.set_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_request_addition_replaces_request_list_with_prompt(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    monkeypatch.setattr(auth, "SessionLocal", Session)
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=SimpleNamespace(id=7, role="client")),
+    )
+    monkeypatch.setattr(
+        auth,
+        "get_repair_request",
+        AsyncMock(return_value=SimpleNamespace(user_id=7, status="new")),
+    )
+    message = SimpleNamespace(edit_text=AsyncMock())
+    callback = SimpleNamespace(
+        data="request:append:13",
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(clear=AsyncMock(), update_data=AsyncMock(), set_state=AsyncMock())
+
+    await auth.start_request_addition(callback, state)
+
+    message.edit_text.assert_awaited_once()
+    assert "Напишите детали" in message.edit_text.await_args.args[0]
+    state.update_data.assert_awaited_once_with(request_id=13)
+
+
+@pytest.mark.asyncio
+async def test_cancel_addition_returns_to_same_request(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    request = SimpleNamespace(
+        id=13,
+        status="new",
+        priority="medium",
+        description="Компьютер не включается после выключения света.",
+        ai_assessment=None,
+    )
+    monkeypatch.setattr(auth, "SessionLocal", Session)
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=SimpleNamespace(id=7, role="client")),
+    )
+    monkeypatch.setattr(auth, "get_user_requests", AsyncMock(return_value=[request]))
+    message = SimpleNamespace(edit_text=AsyncMock())
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(
+        get_state=AsyncMock(return_value=auth.RequestStates.waiting_addition.state),
+        get_data=AsyncMock(return_value={"request_id": 13}),
+        clear=AsyncMock(),
+    )
+
+    await auth.cancel_button(callback, state)
+
+    callback.answer.assert_awaited_once_with("Дополнение отменено.")
+    assert "Заявка №13" in message.edit_text.await_args.args[0]
+    assert message.edit_text.await_args.kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
 async def test_request_completion_sends_result_message(monkeypatch):
     request = SimpleNamespace(
         id=13,
@@ -210,6 +426,54 @@ async def test_request_completion_sends_result_message(monkeypatch):
     await auth.finish_request_creation(message, state)
 
     message.answer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_request_photo_shows_and_removes_ai_progress_message(monkeypatch):
+    progress_message = SimpleNamespace(delete=AsyncMock())
+    message = SimpleNamespace(
+        photo=[SimpleNamespace(file_id="photo-id", file_size=1024)],
+        answer=AsyncMock(return_value=progress_message),
+        bot=SimpleNamespace(
+            get_file=AsyncMock(return_value=SimpleNamespace(file_path="photo-path")),
+            download_file=AsyncMock(return_value=BytesIO(b"photo-bytes")),
+        ),
+    )
+    state = SimpleNamespace()
+    finish = AsyncMock()
+    monkeypatch.setattr(auth, "finish_request_creation", finish)
+
+    await auth.process_request_photo(message, state)
+
+    message.answer.assert_awaited_once_with("🤖 Проводим ИИ-оценку заявки…")
+    finish.assert_awaited_once_with(
+        message,
+        state,
+        photo_file_id="photo-id",
+        photo_bytes=b"photo-bytes",
+    )
+    progress_message.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_skipping_photo_shows_and_removes_ai_progress_message(monkeypatch):
+    progress_message = SimpleNamespace(delete=AsyncMock())
+    message = SimpleNamespace(answer=AsyncMock(return_value=progress_message))
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace()
+    finish = AsyncMock()
+    monkeypatch.setattr(auth, "finish_request_creation", finish)
+
+    await auth.skip_request_photo(callback, state)
+
+    callback.answer.assert_awaited_once()
+    message.answer.assert_awaited_once_with("🤖 Проводим ИИ-оценку заявки…")
+    finish.assert_awaited_once_with(message, state, telegram_id=55)
+    progress_message.delete.assert_awaited_once()
 
 
 @pytest.mark.asyncio
