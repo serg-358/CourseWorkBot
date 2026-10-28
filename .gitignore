@@ -228,7 +228,6 @@ bot_database.db
 *.sqlite
 *.sqlite3
 logs/
-data/
 .pytest_cache/
 .pre-commit-cache/
 .coverage
