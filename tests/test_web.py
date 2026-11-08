@@ -79,6 +79,9 @@ async def test_website_register_link_telegram_and_enforce_role_access(
 
         client_page = await client.get("/panel")
         assert "Кабинет клиента" in client_page.text
+        assert "dashboard-metrics" in client_page.text
+        assert "Начните с первой заявки" in client_page.text
+        assert "Как проходит ремонт" in client_page.text
         assert "Создать заявку" in client_page.text
         assert "Телефон: +79990000001" in client_page.text
         assert (await client.get("/admin/users")).status_code == 403
@@ -113,6 +116,11 @@ async def test_website_register_link_telegram_and_enforce_role_access(
             address = address_rows.scalar_one()
             assert urgency.surcharge_kopecks == 50_000
             assert address.address == "Улица Примерная, дом 4"
+        populated_dashboard = await client.get("/panel")
+        assert "Ваша текущая заявка" in populated_dashboard.text
+        assert "Компьютер выключается во время игры." in populated_dashboard.text
+        assert "Последние заявки" in populated_dashboard.text
+        assert "Начните с первой заявки" not in populated_dashboard.text
 
 
 @pytest.mark.asyncio
@@ -214,6 +222,8 @@ async def test_admin_can_assign_roles_but_bootstrap_role_is_protected(
         )
         master_page = await client.get("/panel")
         assert "Панель мастера" in master_page.text
+        assert "Что требует внимания" in master_page.text
+        assert "Состояние очереди" in master_page.text
         assert "<table>" in master_page.text
         master_page = await client.get(f"/requests/{repair_request_id}")
         assert "Подтверждённый диагноз" in master_page.text
@@ -338,6 +348,7 @@ def test_workspace_sorts_prices_dates_ids_and_statuses(field, order, expected):
     assert [row.id for row in sorted_requests(items, {'status':'new'})] == [2]
     assert [row.id for row in sorted_requests(items, {'from':'2026-11-02','to':'2026-11-02'})] == [1]
     assert [row.id for row in sorted_requests(items, {'status':'closed'})] == [3]
+    assert [row.id for row in sorted_requests(items, {'status':'active'})] == [2,1]
 
 
 @pytest.mark.asyncio

@@ -64,7 +64,7 @@ from repair_bot.handlers.staff_requests import parse_client_price
 from repair_bot.services.ai.diagnostics import analyze_repair_request
 from repair_bot.services.pricing.catalog import calculate_cost
 
-from repair_bot.web.workspace import requests_table, profile_content, feedback_content
+from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,7 @@ def create_app() -> FastAPI:
             account, user = await identity(request, db)
             if account is None:
                 return RedirectResponse("/login", status_code=303)
-            tab = request.query_params.get("tab", "requests")
+            tab = request.query_params.get("tab", "overview")
             if tab == "profile":
                 content = profile_content(account, user)
             elif tab == "feedback":
@@ -204,14 +204,11 @@ def create_app() -> FastAPI:
             elif tab == "tariffs":
                 tariffs = await get_urgency_tariffs(db)
                 content = "<h1>Тарифы срочности</h1><p>Доплата за срочность добавляется отдельно к стоимости ремонта.</p><div class='grid-nav'>" + "".join(f"<article class='card'><h2>{html.escape(t.label)}</h2><p>{format_rubles(t.surcharge_kopecks)}</p></article>" for t in tariffs) + "</div>"
-            elif tab == "overview" and user is not None and effective_view(request, user) != "admin":
+            elif tab == "overview" and user is not None:
                 role = effective_view(request, user)
                 items = await get_user_requests(db, user.id) if role == "client" else await get_all_requests(db)
-                suffix = f"&view={role}" if user.role == "admin" else ""
-                counts = {key: sum(item.status == key for item in items) for key in ("new", "in_progress", "completed")}
-                content = f"<section class='hero'><span class='eyebrow'>{'КАБИНЕТ КЛИЕНТА' if role == 'client' else 'РАБОЧЕЕ МЕСТО МАСТЕРА'}</span><h1>Здравствуйте, {html.escape(user.full_name)}!</h1><p>{'Ваши обращения и ход ремонта в одном месте.' if role == 'client' else 'Откройте очередь, проверьте диагноз и обновите статус ремонта.'}</p></section>"
-                content += "<div class='workspace-stats'>" + "".join(f"<a class='card' href='/panel?tab=requests&status={key}{suffix}'><span>{label}</span><strong>{counts[key]}</strong></a>" for key,label in [("new","Новые"),("in_progress","В работе"),("completed","Завершены")]) + "</div>"
-                content += f"<div class='actions'><a class='button primary' href='/panel?tab=requests{suffix}'>Открыть заявки →</a><a class='button secondary' href='/panel?tab=feedback{suffix}'>Обратная связь</a></div>"
+                users = await get_all_users(db) if role == "admin" else []
+                content = dashboard_content(request, user, role, items, users)
             elif user is None:
                 content = await unlinked_panel(request, account, db)
             elif effective_view(request, user) == "client":
@@ -546,7 +543,7 @@ def create_app() -> FastAPI:
                 f"<img class='request-photo' src='/requests/{item.id}/photo?view={view}' alt='Фотография к заявке №{item.id}'>"
                 if item.ai_assessment and item.ai_assessment.photo_file_id else "<p>Фотография к заявке не приложена.</p>"
             )
-            content = f"<a class='button secondary' href='/panel?view={view}'>← К списку</a><article class='request-card'><h1>Заявка №{item.id}</h1>"
+            content = f"<a class='button secondary' href='/panel?tab=requests&view={view}'>← К списку</a><article class='request-card'><h1>Заявка №{item.id}</h1>"
             content += text.replace(chr(10), "<br>") + photo
             if address:
                 content += f"<p>Адрес выезда: {html.escape(address.address)}</p>"
@@ -695,18 +692,8 @@ async def unlinked_panel(
     request: Request, account: WebsiteAccount, db: AsyncSession
 ) -> str:
     """Показывает шаг привязки Telegram для клиентского аккаунта."""
-    csrf = csrf_token(request)
-    message = (
-        "<p>Чтобы видеть свои заявки, зарегистрируйтесь в Telegram-боте, "
-        "затем создайте одноразовый код привязки.</p>"
-    )
-    bot_link = "<a class='button primary' href='/bot'>Открыть бота</a>"
-    return (
-        f"<section class='hero'><h1>Здравствуйте!</h1><p>{html.escape(account.email)}</p></section>"
-        f"<section class='card'><h2>Свяжите аккаунт с Telegram</h2>{message}{bot_link}"
-        "<form method='post' action='/account/link-code'>"
-        f"<input type='hidden' name='csrf' value='{csrf}'><button>Получить одноразовый код</button></form></section>"
-    )
+    return templates.get_template("onboarding.html").render(account=account, csrf=csrf_token(request))
+
 
 
 async def client_panel(
@@ -736,7 +723,7 @@ async def client_panel(
         f"<section class='hero'><h1>Кабинет клиента</h1><p>Здравствуйте, {html.escape(user.full_name)}.</p>"
         f"<p>Телефон: {html.escape(user.phone)}</p>"
         f"<p>{html.escape(texts['client_welcome'])}</p>{bot_link}</section>"
-        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else "<details class='create-request-panel'><summary>＋ Создать заявку</summary>" + create_form + "</details>")
+        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else ("<details class='create-request-panel' open>" if request.query_params.get("create") == "1" else "<details class='create-request-panel'>") + "<summary>＋ Создать заявку</summary>" + create_form + "</details>")
         + "<section><h2>Ваши заявки</h2>"
         + requests_table(requests, view="client" if user.role == "admin" else "", params=dict(request.query_params))
         + "</section>"
@@ -756,19 +743,34 @@ async def master_panel(request: Request, user: User, db: AsyncSession) -> str:
 async def admin_panel(request: Request, user: User, db: AsyncSession) -> str:
     """Рендерит сводку и ссылки на инструменты администратора."""
     users = await get_all_users(db)
-    requests = await get_all_requests(db)
-    role_cards = "".join(
-        f"<a href='/admin/users?role={role}'><div><b>{sum(item.role == role for item in users)}</b><span>{label}</span></div></a>"
-        for role, label in (("admin", "Администраторы"), ("master", "Мастера"), ("client", "Клиенты"))
-    )
-    return (
-        f"<section class='hero'><h1>Панель администратора</h1>"
-        f"<p>Здравствуйте, {html.escape(user.full_name)}.</p>"
-        f"<div class='stats'>{role_cards}"
-        f"<a href='/admin/requests'><div><b>{len(requests)}</b><span>Заявки</span></div></a></div></section>"
-        "<nav class='grid-nav'><a href='/admin/users'>Пользователи и роли</a>"
-        "<a href='/admin/requests'>Все заявки и цены</a>"
-        "<a href='/admin/tariffs'>Тарифы срочности</a><a href='/admin/texts'>Тексты сайта</a></nav>"
+    items = await get_all_requests(db)
+    return dashboard_content(request, user, "admin", items, users)
+
+
+
+def dashboard_content(request: Request, user: User, role: str, items: list[RepairRequest], users: list[User]) -> str:
+    """Готовит ролевую сводку только из доступных пользователю заявок."""
+    preview = role if user.role == "admin" and role != "admin" else ""
+    suffix = f"&view={preview}" if preview else ""
+    list_url = "/admin/requests?tab=requests" if role == "admin" else "/panel?tab=requests" + suffix
+    rows = []
+    for item in items:
+        price = request_price(item)
+        rows.append({"id": item.id, "description": item.description[:140], "status": item.status,
+                     "status_label": STATUSES.get(item.status, "Неизвестен"), "priority": item.priority,
+                     "priority_label": PRIORITIES.get(item.priority, "Средний"),
+                     "date": item.created_at.strftime("%d.%m.%Y"),
+                     "price": format_rubles(price) if price is not None else "Уточняется",
+                     "owner": item.user.full_name if role != "client" else "",
+                     "url": f"/requests/{item.id}" + (f"?view={preview}" if preview else "")})
+    active = [row for row in rows if row["status"] in {"new", "in_progress"}]
+    counts = {key: sum(row["status"] == key for row in rows) for key in STATUSES}
+    return templates.get_template("dashboard.html").render(
+        role=role, name=user.full_name, phone=user.phone, rows=rows[:5], focus=active[0] if active else (rows[0] if rows else None),
+        counts=counts, total=len(rows), active=len(active), high=sum(row["priority"] == "high" for row in active),
+        unchecked=sum(item.status in {"new", "in_progress"} and not item.ai_assessment and not item.staff_edits for item in items),
+        role_counts={key: sum(person.role == key for person in users) for key in ROLE_NAMES},
+        list_url=list_url, suffix=suffix, preview=preview,
     )
 
 
@@ -838,7 +840,7 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
     actual_role = role
     if role == "admin" and request.query_params.get("view") in {"client", "master"}:
         role = request.query_params["view"]
-    nav_items = navigation_items(role, request.url.path, request.query_params.get("tab", "requests"), request.query_params.get("view", "") if actual_role == "admin" else "", request.query_params.get("status", "")) if logged_in else []
+    nav_items = navigation_items(role, request.url.path, request.query_params.get("tab", "overview"), request.query_params.get("view", "") if actual_role == "admin" else "", request.query_params.get("status", "")) if logged_in else []
     if logged_in and not nav_items:
         nav_items = [{"label": "Личный кабинет", "href": "/panel", "active": False}]
     return templates.TemplateResponse(
@@ -857,7 +859,7 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
     )
 
 
-def navigation_items(role: str | None, path: str, tab: str = "requests", preview: str = "", status: str = "") -> list[dict[str, str | bool]]:
+def navigation_items(role: str | None, path: str, tab: str = "overview", preview: str = "", status: str = "") -> list[dict[str, str | bool]]:
     """Формирует рабочие вкладки с сохранением предпросмотра роли."""
     common = [("Главная", "/panel?tab=overview"), ("Профиль", "/panel?tab=profile"), ("Обратная связь", "/panel?tab=feedback")]
     options = {

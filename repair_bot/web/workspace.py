@@ -25,6 +25,8 @@ def sorted_requests(items: list[RepairRequest], params: dict[str, str]) -> list[
     status = params.get("status", "")
     if status == "closed":
         result = [item for item in result if item.status in {"completed", "cancelled"}]
+    elif status == "active":
+        result = [item for item in result if item.status in {"new", "in_progress"}]
     elif status in STATUSES:
         result = [item for item in result if item.status == status]
     priority = params.get("priority", "")
@@ -71,7 +73,7 @@ def requests_table(items: list[RepairRequest], staff: bool = False, view: str = 
         f"<form class='request-filters' method='get' action='{path}'>{hidden}"
         f"<label>Сортировать<select name='sort'>{options({'date':'По дате','id':'По номеру','status':'По статусу','priority':'По приоритету','price':'По цене'}, params.get('sort','date'))}</select></label>"
         f"<label>Порядок<select name='order'>{options({'desc':'По убыванию','asc':'По возрастанию'}, params.get('order','desc'))}</select></label>"
-        f"<label>Статус<select name='status'>{options({'':'Все статусы', **STATUSES, 'closed':'Архив'}, params.get('status',''))}</select></label>"
+        f"<label>Статус<select name='status'>{options({'':'Все статусы', **STATUSES, 'active':'Активные', 'closed':'Архив'}, params.get('status',''))}</select></label>"
         f"<label>Приоритет<select name='priority'>{options({'':'Все приоритеты', **PRIORITIES}, params.get('priority',''))}</select></label>"
         f"<label>Дата от<input type='date' name='from' value='{html.escape(params.get('from',''), quote=True)}'></label>"
         f"<label>Дата до<input type='date' name='to' value='{html.escape(params.get('to',''), quote=True)}'></label>"

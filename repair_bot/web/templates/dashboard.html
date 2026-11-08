@@ -1,0 +1,53 @@
+<section class="dashboard-heading">
+  <div><span class="eyebrow">{{ 'ОБЗОР СЕРВИСА' if role == 'admin' else 'ВАШ РЕМОНТ ПОД КОНТРОЛЕМ' if role == 'client' else 'РАБОЧАЯ ОЧЕРЕДЬ' }}</span>
+    <h1>{{ 'Панель администратора' if role == 'admin' else 'Кабинет клиента' if role == 'client' else 'Панель мастера' }}</h1>
+    <p>Здравствуйте, {{ name }}! {{ 'Здесь собрана текущая ситуация по пользователям и ремонту.' if role == 'admin' else 'Следите за ремонтом и управляйте своими обращениями.' if role == 'client' else 'Начните с новых обращений и заявок с высоким приоритетом.' }}</p>
+  </div>
+  <a class="button primary" href="{{ '/panel?tab=requests&create=1' + suffix if role == 'client' else list_url }}">{{ '＋ Создать заявку' if role == 'client' else 'Открыть очередь →' }}</a>
+</section>
+{% if preview %}<p class="dashboard-notice">Предпросмотр интерфейса {{ 'клиента' if role == 'client' else 'мастера' }}. Настоящая роль администратора сохранена.{% if role == 'client' %} Показаны только ваши собственные заявки.{% endif %}</p>{% endif %}
+<div class="dashboard-metrics">
+  {% if role == 'admin' %}
+    {% for key, label in [('admin','Администраторы'),('master','Мастера'),('client','Клиенты')] %}<a href="/admin/users?role={{ key }}" class="metric-tile"><span>{{ label }}</span><strong>{{ role_counts[key] }}</strong><small>Открыть список ↗</small></a>{% endfor %}
+    <a href="{{ list_url }}" class="metric-tile"><span>Заявки</span><strong>{{ total }}</strong><small>{{ active }} активных</small></a>
+  {% else %}
+    {% for value, label, status in [(total,'Всего заявок',''),(counts.new,'Новые','new'),(counts.in_progress,'В работе','in_progress'),(counts.completed,'Завершены','completed')] %}<a href="{{ list_url }}&status={{ status }}" class="metric-tile"><span>{{ label }}</span><strong>{{ value }}</strong><small>Посмотреть заявки ↗</small></a>{% endfor %}
+  {% endif %}
+</div>
+<div class="dashboard-columns">
+  <div class="dashboard-primary">
+    {% if role == 'client' %}
+    <section class="dashboard-panel focus-request"><div class="panel-title"><h2>{{ 'Ваша текущая заявка' if focus and focus.status in ['new','in_progress'] else 'Последняя заявка' if focus else 'Начните с первой заявки' }}</h2>{% if focus %}<a href="{{ focus.url }}">№{{ focus.id }} ↗</a>{% endif %}</div>
+      {% if focus %}
+        <span class="status-badge status-{{ focus.status }}">{{ focus.status_label }}</span><h3>{{ focus.description }}</h3>
+        {% if focus.status != 'cancelled' %}<ol class="repair-progress" aria-label="Этап ремонта">{% for key,label in [('new','Заявка принята'),('in_progress','В работе'),('completed','Завершена')] %}<li class="{{ 'is-current' if focus.status == key else '' }}"><span>{{ loop.index }}</span>{{ label }}</li>{% endfor %}</ol>{% else %}<p>Эта заявка отменена. При необходимости вы можете создать новое обращение.</p>{% endif %}
+        <div class="focus-cost"><div><span>Предварительный итог</span><strong>{{ focus.price }}</strong><small>Включает выбранную доплату за срочность</small></div><a class="button secondary" href="{{ focus.url }}">Подробнее →</a></div>
+      {% else %}
+        <div class="dashboard-empty"><span class="empty-symbol" aria-hidden="true">＋</span><h3>Расскажите, что случилось с техникой</h3><p>Выберите срочность и опишите проблему. Заявка появится здесь, а мастер сможет уточнить диагноз и стоимость.</p><a class="button primary" href="/panel?tab=requests&create=1{{ suffix }}">Создать заявку</a></div>
+      {% endif %}
+    </section>
+    {% else %}
+    <section class="dashboard-panel"><div class="panel-title"><h2>Что требует внимания</h2><span class="panel-caption">Текущая очередь</span></div>
+      <a class="attention-line" href="{{ list_url }}&priority=high&status=active"><span class="attention-icon high">!</span><div><strong>Высокий приоритет</strong><p>{{ 'Сначала проверьте эти активные обращения.' if high else 'Активных заявок с высоким приоритетом нет.' }}</p></div><b>{{ high }}</b><span>→</span></a>
+      <a class="attention-line" href="{{ list_url }}&status=new"><span class="attention-icon">＋</span><div><strong>Новые обращения</strong><p>{{ 'Заявки ожидают начала работы.' if counts.new else 'Новых обращений пока нет.' }}</p></div><b>{{ counts.new }}</b><span>→</span></a>
+      <div class="assessment-note"><strong>Без предварительной оценки: {{ unchecked }}</strong><p>Среди активных заявок без AI-оценки и без правки специалиста. Откройте карточку, чтобы уточнить диагноз и цену.</p></div>
+    </section>
+    {% endif %}
+    <section class="dashboard-panel recent-panel"><div class="panel-title"><h2>Последние заявки</h2><a href="{{ list_url }}">Все заявки →</a></div>
+      {% if rows %}<div class="table-wrap"><table><thead><tr><th>Номер / дата</th><th>Обращение</th><th>Статус</th><th>Предварительный итог</th></tr></thead><tbody>{% for row in rows %}<tr><td><a href="{{ row.url }}">№{{ row.id }}</a><small class="cell-detail">{{ row.date }}</small></td><td><a href="{{ row.url }}">{{ row.description }}</a>{% if role != 'client' %}<small class="cell-detail">{{ row.owner }} · {{ row.priority_label }} приоритет</small>{% endif %}</td><td><span class="status-badge status-{{ row.status }}">{{ row.status_label }}</span></td><td class="price-cell">{{ row.price }}</td></tr>{% endfor %}</tbody></table></div>
+      {% else %}<div class="dashboard-empty compact"><h3>Здесь появятся обращения</h3><p>{{ 'Ваши заявки из бота и сайта будут собраны в общем списке.' if role == 'client' else 'Когда клиент создаст заявку через сайт или бота, она появится в очереди.' }}</p><a href="{{ '/bot' if role != 'client' else '/panel?tab=requests&create=1' + suffix }}">{{ 'Открыть Telegram-бота ↗' if role != 'client' else 'Создать первую заявку →' }}</a></div>{% endif %}
+    </section>
+  </div>
+  <aside class="dashboard-sidebar">
+    <section class="dashboard-panel"><div class="panel-title"><h2>Быстрые действия</h2></div><nav class="quick-links">
+      {% if role == 'admin' %}<a href="/admin/users"><span>Пользователи и роли</span>→</a><a href="/admin/tariffs"><span>Изменить тарифы срочности</span>→</a><a href="/admin/texts"><span>Тексты кабинета</span>→</a>
+      {% elif role == 'master' %}<a href="{{ list_url }}&status=in_progress"><span>Заявки в работе</span>→</a><a href="{{ list_url }}&status=closed"><span>Архив ремонтов</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Связаться с администратором</span>→</a>
+      {% else %}<a href="/panel?tab=tariffs{{ suffix }}"><span>Посмотреть доплаты за срочность</span>→</a><a href="/panel?tab=profile{{ suffix }}"><span>Мои контактные данные</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Задать вопрос</span>→</a>{% endif %}
+    </nav></section>
+    <section class="dashboard-panel"><span class="eyebrow">{{ 'ВАЖНО ЗНАТЬ' if role == 'client' else 'РАБОЧИЙ ПОРЯДОК' }}</span><h2>{{ 'Как проходит ремонт' if role == 'client' else 'Работа с заявкой' }}</h2><ol class="dashboard-guide">
+      {% if role == 'client' %}<li><strong>Опишите проблему</strong><p>Добавьте симптомы и выберите срочность.</p></li><li><strong>Дождитесь проверки</strong><p>AI-оценка предварительная; её уточняет специалист.</p></li><li><strong>Следите за статусом</strong><p>Изменения видны в кабинете и приходят в Telegram.</p></li>
+      {% else %}<li><strong>Изучите обращение</strong><p>Проверьте описание, фото и предварительную оценку.</p></li><li><strong>Уточните решение</strong><p>Исправьте диагноз и стоимость в карточке. Автор правки сохраняется.</p></li><li><strong>Обновите статус</strong><p>При изменении статуса клиент получит уведомление.</p></li>{% endif %}
+    </ol></section>
+    {% if role == 'client' %}<section class="dashboard-panel contact-note"><span class="eyebrow">ВАШИ КОНТАКТЫ</span><p>Телефон: {{ phone }}</p><a href="/panel?tab=profile{{ suffix }}">Открыть профиль →</a></section>{% else %}<section class="dashboard-panel"><h2>Состояние очереди</h2><div class="queue-breakdown">{% for key,label in [('new','Новые'),('in_progress','В работе'),('completed','Завершены'),('cancelled','Отменены')] %}<a href="{{ list_url }}&status={{ key }}"><span>{{ label }}</span><strong>{{ counts[key] }}</strong></a>{% endfor %}</div></section>{% endif %}
+  </aside>
+</div>
