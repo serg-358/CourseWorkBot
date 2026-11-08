@@ -373,3 +373,18 @@ async def test_workspace_tabs_and_feedback_delivery(db_session_factory, monkeypa
         repeated=await client.post('/feedback',data={'csrf':csrf,'message':'Please help with my repair request.'})
         assert 'Подождите минуту' in repeated.text
         assert delivery.await_count == 1
+
+@pytest.mark.parametrize('order,expected', [('desc',[3,1,2]),('asc',[2,1,3])])
+def test_priority_sort_and_combined_filter(order, expected):
+    from datetime import datetime
+    from types import SimpleNamespace as Item
+    from repair_bot.web.workspace import sorted_requests, requests_table
+    items = [Item(id=number, priority=priority, status=status, created_at=datetime(2026,11,8), description='Repair request', staff_edits=[], ai_assessment=None, urgency=None) for number,priority,status in [(1,'medium','new'),(2,'low','new'),(3,'high','in_progress')]]
+    assert [item.id for item in sorted_requests(items, {'sort':'priority','order':order})] == expected
+    assert [item.id for item in sorted_requests(items, {'priority':'high','status':'in_progress','from':'2026-11-08','to':'2026-11-08'})] == [3]
+    assert sorted_requests(items, {'priority':'high','status':'new'}) == []
+    page=requests_table(items,params={'priority':'high','sort':'priority','order':order})
+    assert "name='priority'" in page
+    assert 'По приоритету' in page
+    assert 'priority=high' in page
+    assert '№3' in page and '№1' not in page

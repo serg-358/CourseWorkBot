@@ -27,6 +27,9 @@ def sorted_requests(items: list[RepairRequest], params: dict[str, str]) -> list[
         result = [item for item in result if item.status in {"completed", "cancelled"}]
     elif status in STATUSES:
         result = [item for item in result if item.status == status]
+    priority = params.get("priority", "")
+    if priority in PRIORITIES:
+        result = [item for item in result if item.priority == priority]
     for field, lower in (("from", True), ("to", False)):
         try:
             boundary = date.fromisoformat(params.get(field, ""))
@@ -41,6 +44,7 @@ def sorted_requests(items: list[RepairRequest], params: dict[str, str]) -> list[
         "id": lambda item: item.id,
         "date": lambda item: item.created_at,
         "status": lambda item: list(STATUSES).index(item.status) if item.status in STATUSES else 99,
+        "priority": lambda item: {"low": 0, "medium": 1, "high": 2}.get(item.priority, 1),
         "price": request_price,
     }
     getter = getters.get(key, getters["date"])
@@ -65,9 +69,10 @@ def requests_table(items: list[RepairRequest], staff: bool = False, view: str = 
     hidden = "<input type='hidden' name='tab' value='requests'>" + (f"<input type='hidden' name='view' value='{view}'>" if view else "")
     filters = (
         f"<form class='request-filters' method='get' action='{path}'>{hidden}"
-        f"<label>Сортировать<select name='sort'>{options({'date':'По дате','id':'По номеру','status':'По статусу','price':'По цене'}, params.get('sort','date'))}</select></label>"
+        f"<label>Сортировать<select name='sort'>{options({'date':'По дате','id':'По номеру','status':'По статусу','priority':'По приоритету','price':'По цене'}, params.get('sort','date'))}</select></label>"
         f"<label>Порядок<select name='order'>{options({'desc':'По убыванию','asc':'По возрастанию'}, params.get('order','desc'))}</select></label>"
         f"<label>Статус<select name='status'>{options({'':'Все статусы', **STATUSES, 'closed':'Архив'}, params.get('status',''))}</select></label>"
+        f"<label>Приоритет<select name='priority'>{options({'':'Все приоритеты', **PRIORITIES}, params.get('priority',''))}</select></label>"
         f"<label>Дата от<input type='date' name='from' value='{html.escape(params.get('from',''), quote=True)}'></label>"
         f"<label>Дата до<input type='date' name='to' value='{html.escape(params.get('to',''), quote=True)}'></label>"
         f"<button>Применить</button><a href='{html.escape(path + '?' + urlencode({'tab':'requests', **({'view':view} if view else {})}), quote=True)}'>Сбросить</a></form>"
@@ -80,7 +85,7 @@ def requests_table(items: list[RepairRequest], staff: bool = False, view: str = 
         price = request_price(item)
         price_text = format_rubles(price) if price is not None else "Уточняется"
         rows.append(f"<tr><td><a href='{detail}'>№{item.id}</a></td>{owner}<td><a href='{detail}'>{html.escape(item.description[:100])}</a></td><td>{STATUSES.get(item.status, 'Неизвестен')}</td><td>{PRIORITIES.get(item.priority, 'Средний')}</td><td>{item.created_at:%d.%m.%Y}</td><td class='price-cell'>{price_text}</td><td><a href='{detail}'>Открыть →</a></td></tr>")
-    headers = heading("Номер", "id") + ("<th>Клиент</th>" if staff else "") + "<th>Описание</th>" + heading("Статус", "status") + "<th>Приоритет</th>" + heading("Создана", "date") + heading("Предварительный итог", "price") + "<th></th>"
+    headers = heading("Номер", "id") + ("<th>Клиент</th>" if staff else "") + "<th>Описание</th>" + heading("Статус", "status") + heading("Приоритет", "priority") + heading("Создана", "date") + heading("Предварительный итог", "price") + "<th></th>"
     table = f"<div class='table-wrap'><table><thead><tr>{headers}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>" if rows else "<p class='card'>По выбранным условиям заявок нет.</p>"
     return filters + f"<p class='muted'>Найдено: {len(filtered)} · Цена включает выбранную доплату за срочность.</p>" + table
 
