@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from migrate_ai_assessments import migrate_ai_assessments
+from repair_bot.scripts.migrate_ai_assessments import migrate_ai_assessments
 
 
 @pytest.mark.asyncio

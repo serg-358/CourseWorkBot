@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from models import RepairRequest, RepairRequestAiAssessment
+from repair_bot.database.models import RepairRequest, RepairRequestAiAssessment
 
 
 async def get_request_status_counts(db: AsyncSession) -> dict[str, int]:

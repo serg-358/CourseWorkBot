@@ -1,11 +1,6 @@
-"""Состояния диалога регистрации."""
+"""Состояния создания и дополнения заявки."""
 
 from aiogram.fsm.state import State, StatesGroup
-
-
-class RegistrationStates(StatesGroup):
-    waiting_full_name = State()
-    waiting_phone = State()
 
 
 class RequestStates(StatesGroup):

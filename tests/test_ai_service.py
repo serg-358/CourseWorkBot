@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_service import analyze_repair_request, normalize_catalog_item_codes
+from repair_bot.services.ai.diagnostics import analyze_repair_request, normalize_catalog_item_codes
 
 
 @pytest.mark.asyncio

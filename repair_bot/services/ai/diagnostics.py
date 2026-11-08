@@ -11,7 +11,7 @@ from io import BytesIO
 
 from PIL import Image, ImageOps
 
-from pricing_catalog import CATALOG
+from repair_bot.services.pricing.catalog import CATALOG
 
 AI_TIMEOUT_SECONDS = 20
 AI_IMAGE_MAX_SIDE = 1600

@@ -2,7 +2,7 @@ from io import BytesIO
 
 from PIL import Image
 
-from ai_service import AI_IMAGE_MAX_BYTES, prepare_ai_photo, sanitize_description
+from repair_bot.services.ai.diagnostics import AI_IMAGE_MAX_BYTES, prepare_ai_photo, sanitize_description
 
 
 def test_sanitize_description_masks_phone_and_email() -> None:

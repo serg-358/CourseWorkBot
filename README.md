@@ -25,7 +25,7 @@ AI-диагностика использует совместимый с OpenAI 
 - Python 3.11.
 - Aiogram 3.x, асинхронный long polling.
 - SQLAlchemy 2.x async + SQLite (`aiosqlite`).
-- FSM: собственное SQLite-хранилище `fsm_storage.py`.
+- FSM: собственное SQLite-хранилище в `repair_bot/fsm/`.
 - Pytest и pytest-asyncio для проверок.
 - Docker Compose для запуска в контейнере.
 
@@ -49,24 +49,28 @@ AI-диагностика использует совместимый с OpenAI 
 
 ## Структура проекта
 
+В корне оставлена тонкая точка входа `main.py`, а код приложения собран в пакетах:
+
 ```text
+main.py                         # запускает приложение
 repair_bot/
-├── main.py                  # загрузка окружения и запуск Aiogram polling
-├── models.py                # SQLAlchemy-модели User и RepairRequest
-├── database.py              # async engine, сессии, создание таблиц
-├── fsm_storage.py           # SQLite-хранилище FSM
-├── states.py                # состояния регистрации и создания заявки
-├── keyboards.py             # меню клиента, мастера и администратора
+├── bootstrap.py                # конфигурация и запуск Aiogram polling
+├── database/
+│   ├── session.py              # engine, сессии и таблицы
+│   ├── models/                 # base.py, user.py, repair_request.py, ai_assessment.py
+│   └── crud/                   # users.py и requests.py
+├── fsm/                        # постоянное SQLite-хранилище состояний
 ├── handlers/
-│   └── auth.py              # регистрация, панели, заявки и статусы
-├── crud/
-│   ├── users.py             # CRUD пользователей
-│   └── requests.py          # CRUD заявок и статистика статусов
-├── tests/                   # проверки CRUD, ролей, телефона и меню
-├── requirements.txt         # зависимости приложения
-├── requirements-dev.txt     # зависимости приложения и тестов
-├── Dockerfile
-└── compose.yaml
+│   ├── registration.py         # запуск, регистрация и отмена диалогов
+│   ├── client_requests.py      # создание и просмотр заявок клиента
+│   ├── staff_requests.py       # очередь, фото и статусы заявок
+│   ├── admin.py                # пользователи и статистика
+│   └── common.py               # общие проверки и форматирование
+├── keyboards/                  # меню и клавиатуры карточек заявок
+├── states/                     # состояния регистрации и заявок
+├── services/                   # AI-диагностика и прайс-каталог
+└── scripts/                    # явные команды обслуживания данных
+tests/                          # изолированные проверки
 ```
 
 ## Настройка и локальный запуск
@@ -163,7 +167,7 @@ Workflow `.github/workflows/ci-deploy.yml` проверяет Ruff и pytest д�
 Перед первым запуском версии с AI-оценкой на существующей базе выполните отдельную миграцию:
 
 ```powershell
-python migrate_ai_assessments.py
+python -m repair_bot.scripts.migrate_ai_assessments
 ```
 
 Скрипт создаёт только таблицу AI-оценок, не изменяет существующие записи и перед этим создаёт резервную копию файла БД. Повторный запуск безопасен.

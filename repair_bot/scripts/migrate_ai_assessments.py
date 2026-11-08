@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from models import RepairRequestAiAssessment
+from repair_bot.database.models import RepairRequestAiAssessment
 
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_DIR / ".env")
 DEFAULT_DATABASE_PATH = PROJECT_DIR / "bot_database.db"
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", str(DEFAULT_DATABASE_PATH))).expanduser().resolve()

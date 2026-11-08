@@ -1,6 +1,6 @@
 import pytest
 
-from crud.requests import (
+from repair_bot.database.crud.requests import (
     append_request_description,
     create_repair_request,
     delete_repair_request,
@@ -11,8 +11,8 @@ from crud.requests import (
     save_ai_assessment,
     update_request_status,
 )
-from pricing_catalog import calculate_cost
-from crud.users import (
+from repair_bot.services.pricing.catalog import calculate_cost
+from repair_bot.database.crud.users import (
     create_user,
     delete_user,
     get_all_users,

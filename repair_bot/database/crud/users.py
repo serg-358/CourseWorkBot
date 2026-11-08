@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import User
+from repair_bot.database.models import User
 
 
 async def get_user_by_telegram_id(db: AsyncSession, telegram_id: str) -> User | None:

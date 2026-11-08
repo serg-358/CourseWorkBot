@@ -6,9 +6,10 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from models import Base
+from repair_bot.database.models import Base
 
-DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent / "bot_database.db"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATABASE_PATH = PROJECT_ROOT / "bot_database.db"
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", str(DEFAULT_DATABASE_PATH))).expanduser().resolve()
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"

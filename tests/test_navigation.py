@@ -6,8 +6,8 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import GetMe
 
-from handlers import auth
-from keyboards import main_menu_keyboard, request_navigation_keyboard
+from repair_bot.handlers import auth, client_requests, registration, staff_requests
+from repair_bot.keyboards import main_menu_keyboard, request_navigation_keyboard
 
 
 @pytest.mark.parametrize(
@@ -123,9 +123,9 @@ async def test_client_request_callback_edits_screen_without_sending_message(monk
         priority="medium",
         description="Компьютер не включается после обновления.",
     )
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(auth, "get_user_by_telegram_id", AsyncMock(return_value=user))
-    monkeypatch.setattr(auth, "get_user_requests", AsyncMock(return_value=[request]))
+    monkeypatch.setattr(client_requests, "SessionLocal", Session)
+    monkeypatch.setattr(client_requests, "get_user_by_telegram_id", AsyncMock(return_value=user))
+    monkeypatch.setattr(client_requests, "get_user_requests", AsyncMock(return_value=[request]))
 
     bot = SimpleNamespace(edit_message_text=AsyncMock(), send_message=AsyncMock())
     message = SimpleNamespace(
@@ -198,9 +198,8 @@ async def test_request_creation_sends_a_new_dialog_screen(monkeypatch):
         async def __aexit__(self, *_):
             return None
 
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(client_requests, "SessionLocal", Session)
+    monkeypatch.setattr(client_requests,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(role="client")),
     )
@@ -270,16 +269,15 @@ async def test_request_addition_saves_to_owner_request(monkeypatch):
         ),
         ai_assessment=None,
     )
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(auth, "get_user_by_telegram_id", AsyncMock(return_value=user))
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(client_requests, "SessionLocal", Session)
+    monkeypatch.setattr(client_requests, "get_user_by_telegram_id", AsyncMock(return_value=user))
+    monkeypatch.setattr(client_requests,
         "get_repair_request",
         AsyncMock(side_effect=[request, updated_request]),
     )
     append = AsyncMock(return_value=updated_request)
-    monkeypatch.setattr(auth, "append_request_description", append)
-    monkeypatch.setattr(auth, "get_user_requests", AsyncMock(return_value=[updated_request]))
+    monkeypatch.setattr(client_requests, "append_request_description", append)
+    monkeypatch.setattr(client_requests, "get_user_requests", AsyncMock(return_value=[updated_request]))
     message = SimpleNamespace(from_user=SimpleNamespace(id=55), text="Перед этим был запах гари.", answer=AsyncMock())
     state = SimpleNamespace(get_data=AsyncMock(return_value={"request_id": 13}), clear=AsyncMock())
 
@@ -294,7 +292,6 @@ async def test_request_addition_saves_to_owner_request(monkeypatch):
     assert "Дополнение к заявке №13 сохранено" in message.answer.await_args.args[0]
     assert "Перед этим был запах гари." in message.answer.await_args.args[0]
 
-
 @pytest.mark.asyncio
 async def test_request_addition_rejects_non_owner_callback(monkeypatch):
     class Session:
@@ -304,14 +301,12 @@ async def test_request_addition_rejects_non_owner_callback(monkeypatch):
         async def __aexit__(self, *_):
             return None
 
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(client_requests, "SessionLocal", Session)
+    monkeypatch.setattr(client_requests,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(id=7, role="client")),
     )
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(client_requests,
         "get_repair_request",
         AsyncMock(return_value=SimpleNamespace(user_id=8, status="new")),
     )
@@ -338,14 +333,12 @@ async def test_request_addition_replaces_request_list_with_prompt(monkeypatch):
         async def __aexit__(self, *_):
             return None
 
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(client_requests, "SessionLocal", Session)
+    monkeypatch.setattr(client_requests,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(id=7, role="client")),
     )
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(client_requests,
         "get_repair_request",
         AsyncMock(return_value=SimpleNamespace(user_id=7, status="new")),
     )
@@ -381,13 +374,12 @@ async def test_cancel_addition_returns_to_same_request(monkeypatch):
         description="Компьютер не включается после выключения света.",
         ai_assessment=None,
     )
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(registration, "SessionLocal", Session)
+    monkeypatch.setattr(registration,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(id=7, role="client")),
     )
-    monkeypatch.setattr(auth, "get_user_requests", AsyncMock(return_value=[request]))
+    monkeypatch.setattr(registration, "get_user_requests", AsyncMock(return_value=[request]))
     message = SimpleNamespace(edit_text=AsyncMock())
     callback = SimpleNamespace(
         from_user=SimpleNamespace(id=55),
@@ -433,13 +425,11 @@ async def test_cancel_button_keeps_registration_screen(monkeypatch):
     class Session:
         async def __aenter__(self):
             return self
-
         async def __aexit__(self, *_):
             return None
 
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(registration, "SessionLocal", Session)
+    monkeypatch.setattr(registration,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(role="client")),
     )
@@ -470,7 +460,7 @@ async def test_request_completion_sends_result_message(monkeypatch):
         description="Компьютер не включается после выключения света.",
         ai_assessment=None,
     )
-    monkeypatch.setattr(auth, "create_and_analyze_request", AsyncMock(return_value=(request, "client")))
+    monkeypatch.setattr(client_requests, "create_and_analyze_request", AsyncMock(return_value=(request, "client")))
     message = SimpleNamespace(from_user=SimpleNamespace(id=55), answer=AsyncMock())
     state = SimpleNamespace(
         get_data=AsyncMock(return_value={"description": request.description}),
@@ -495,7 +485,7 @@ async def test_request_photo_shows_and_removes_ai_progress_message(monkeypatch):
     )
     state = SimpleNamespace()
     finish = AsyncMock()
-    monkeypatch.setattr(auth, "finish_request_creation", finish)
+    monkeypatch.setattr(client_requests, "finish_request_creation", finish)
 
     await auth.process_request_photo(message, state)
 
@@ -520,7 +510,7 @@ async def test_skipping_photo_shows_and_removes_ai_progress_message(monkeypatch)
     )
     state = SimpleNamespace()
     finish = AsyncMock()
-    monkeypatch.setattr(auth, "finish_request_creation", finish)
+    monkeypatch.setattr(client_requests, "finish_request_creation", finish)
 
     await auth.skip_request_photo(callback, state)
 
@@ -573,12 +563,11 @@ async def test_legacy_status_callback_updates_same_card_and_notifies_owner(monke
         user=owner,
     )
     monkeypatch.setenv("ADMIN_TELEGRAM_IDS", "55")
-    monkeypatch.setattr(auth, "SessionLocal", Session)
-    monkeypatch.setattr(auth, "get_repair_request", AsyncMock(side_effect=[old_request, request]))
-    monkeypatch.setattr(auth, "update_request_status", AsyncMock(return_value=request))
-    monkeypatch.setattr(auth, "get_all_requests", AsyncMock(return_value=[request]))
-    monkeypatch.setattr(
-        auth,
+    monkeypatch.setattr(staff_requests, "SessionLocal", Session)
+    monkeypatch.setattr(staff_requests, "get_repair_request", AsyncMock(side_effect=[old_request, request]))
+    monkeypatch.setattr(staff_requests, "update_request_status", AsyncMock(return_value=request))
+    monkeypatch.setattr(staff_requests, "get_all_requests", AsyncMock(return_value=[request]))
+    monkeypatch.setattr(staff_requests,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(role="admin")),
     )

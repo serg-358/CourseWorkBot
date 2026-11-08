@@ -1,5 +1,5 @@
-from handlers.auth import normalize_phone, role_for_telegram_id
-from keyboards import (
+from repair_bot.handlers.auth import normalize_phone, role_for_telegram_id
+from repair_bot.keyboards import (
     main_menu_keyboard,
     photo_dialog_keyboard,
     request_navigation_keyboard,
