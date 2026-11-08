@@ -10,6 +10,8 @@ from repair_bot.database.models.base import Base, utcnow
 
 if TYPE_CHECKING:
     from repair_bot.database.models.ai_assessment import RepairRequestAiAssessment
+    from repair_bot.database.models.repair_request_staff_edit import RepairRequestStaffEdit
+    from repair_bot.database.models.request_urgency import RequestUrgency
     from repair_bot.database.models.user import User
 
 
@@ -34,5 +36,13 @@ class RepairRequest(Base):
     )
     user: Mapped["User"] = relationship(back_populates="requests")
     ai_assessment: Mapped["RepairRequestAiAssessment | None"] = relationship(
+        back_populates="request", cascade="all, delete-orphan", uselist=False
+    )
+    staff_edits: Mapped[list["RepairRequestStaffEdit"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+        order_by="RepairRequestStaffEdit.created_at",
+    )
+    urgency: Mapped["RequestUrgency | None"] = relationship(
         back_populates="request", cascade="all, delete-orphan", uselist=False
     )

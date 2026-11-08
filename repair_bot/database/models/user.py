@@ -10,6 +10,8 @@ from repair_bot.database.models.base import Base, utcnow
 
 if TYPE_CHECKING:
     from repair_bot.database.models.repair_request import RepairRequest
+    from repair_bot.database.models.repair_request_staff_edit import RepairRequestStaffEdit
+    from repair_bot.database.models.website_account import WebsiteAccount
 
 
 class User(Base):
@@ -27,4 +29,10 @@ class User(Base):
     )
     requests: Mapped[list["RepairRequest"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
+    )
+    request_edits: Mapped[list["RepairRequestStaffEdit"]] = relationship(
+        back_populates="editor", foreign_keys="RepairRequestStaffEdit.editor_user_id"
+    )
+    website_account: Mapped["WebsiteAccount | None"] = relationship(
+        back_populates="user", uselist=False
     )

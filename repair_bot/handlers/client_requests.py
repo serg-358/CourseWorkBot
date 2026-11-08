@@ -9,7 +9,15 @@ from aiogram.types import CallbackQuery, Message
 from repair_bot.database.crud.requests import append_request_description, create_repair_request, get_repair_request, get_user_requests, save_ai_assessment
 from repair_bot.database.crud.users import get_user_by_telegram_id
 from repair_bot.database.session import SessionLocal
-from repair_bot.keyboards import dialog_keyboard, main_menu_keyboard, photo_dialog_keyboard, request_navigation_keyboard
+from repair_bot.keyboards import (
+    dialog_keyboard,
+    main_menu_keyboard,
+    photo_dialog_keyboard,
+    request_navigation_keyboard,
+    urgency_keyboard,
+)
+from repair_bot.keyboards.requests import format_surcharge
+from repair_bot.database.crud.pricing import get_urgency_tariffs, get_urgency_tariff
 from repair_bot.database.models import RepairRequest
 from repair_bot.states import RequestStates
 from repair_bot.services.ai.diagnostics import analyze_repair_request
@@ -22,13 +30,19 @@ from repair_bot.handlers.common import (
     client_request_text,
     edit_callback_screen,
     menu_for_user,
-    role_for_telegram_id,
 )
 import logging
 from aiogram import Router
 
 router = Router(name="client_requests")
 logger = logging.getLogger(__name__)
+
+
+async def current_user_role(telegram_id: int) -> str:
+    """Читает текущую роль из общей БД, включая назначения с веб-сайта."""
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(telegram_id))
+    return user.role if user else "client"
 
 @router.callback_query(F.data == "menu:requests")
 @router.callback_query(F.data.startswith("requests:client:"))
@@ -80,21 +94,52 @@ async def show_page_info(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:create")
 async def start_request_creation(callback: CallbackQuery, state: FSMContext) -> None:
-    """Начинает ввод описания новой заявки."""
+    """Предлагает клиенту выбрать срочность и отдельную доплату."""
     if callback.message is None or callback.from_user is None:
         return
     async with SessionLocal() as db:
         user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        tariffs = await get_urgency_tariffs(db)
     if not user:
         await callback.answer("ℹ️ Сначала зарегистрируйтесь командой /start.", show_alert=True)
         return
-    role = user.role
     await state.clear()
+    await state.set_state(RequestStates.waiting_urgency)
+    await callback.answer()
+    await state.update_data(
+        screen_chat_id=callback.message.chat.id,
+        screen_message_id=callback.message.message_id,
+    )
+    await edit_callback_screen(
+        callback,
+        "⏱ <b>Выберите срочность ремонта</b>\n"
+        "Доплата за срочность показана отдельно от стоимости ремонта.",
+        reply_markup=urgency_keyboard(tariffs),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(RequestStates.waiting_urgency, F.data.startswith("urgency:choose:"))
+async def choose_request_urgency(callback: CallbackQuery, state: FSMContext) -> None:
+    """Сохраняет выбранный тариф в FSM и открывает ввод описания."""
+    if callback.from_user is None:
+        return
+    code = (callback.data or "").rsplit(":", 1)[-1]
+    async with SessionLocal() as db:
+        tariff = await get_urgency_tariff(db, code)
+        user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+    if tariff is None or user is None:
+        await callback.answer("Тариф недоступен. Откройте создание заявки снова.", show_alert=True)
+        return
+    await state.update_data(urgency_code=tariff.code)
     await state.set_state(RequestStates.waiting_description)
     await callback.answer()
-    await callback.message.answer(
-        "📝 Опишите неисправность компьютера. Мастер увидит это описание в заявке.",
-        reply_markup=dialog_keyboard(menu_for_user(callback.from_user.id, role)),
+    await edit_callback_screen(
+        callback,
+        f"⏱ Срочность: <b>{tariff.label}</b> ({format_surcharge(tariff.surcharge_kopecks)}).\n\n"
+        "📝 Теперь опишите неисправность компьютера. Мастер увидит это описание в заявке.",
+        reply_markup=dialog_keyboard(menu_for_user(callback.from_user.id, user.role)),
+        parse_mode="HTML",
     )
 
 @router.callback_query(F.data.startswith("request:append:"))
@@ -133,7 +178,8 @@ async def process_request_description(message: Message, state: FSMContext) -> No
         return
     description = (message.text or "").strip()
     if len(description) < 10:
-        menu = menu_for_user(message.from_user.id, role_for_telegram_id(message.from_user.id))
+        role = await current_user_role(message.from_user.id)
+        menu = menu_for_user(message.from_user.id, role)
         await message.answer(
             "⚠️ Опишите проблему подробнее (не менее 10 символов). Попробуйте ещё раз:",
             reply_markup=dialog_keyboard(menu),
@@ -141,7 +187,7 @@ async def process_request_description(message: Message, state: FSMContext) -> No
         return
     await state.update_data(description=description[:4000])
     await state.set_state(RequestStates.waiting_photo)
-    role = role_for_telegram_id(message.from_user.id)
+    role = await current_user_role(message.from_user.id)
     await message.answer(
         "🤖 Для предварительной AI-оценки описание и необязательное фото ошибки "
         "будут переданы в OpenAI. Пришлите одно фото до 10 МБ или нажмите «Пропустить фото».",
@@ -150,7 +196,11 @@ async def process_request_description(message: Message, state: FSMContext) -> No
 
 @router.message(RequestStates.waiting_description)
 async def process_non_text_description(message: Message, state: FSMContext) -> None:
-    role = role_for_telegram_id(message.from_user.id) if message.from_user else "client"
+    role = (
+        await current_user_role(message.from_user.id)
+        if message.from_user
+        else "client"
+    )
     menu = menu_for_user(message.from_user.id, role) if message.from_user else main_menu_keyboard()
     await message.answer(
         "📝 Отправьте описание неисправности текстом или нажмите «Отмена».",
@@ -235,13 +285,14 @@ async def create_and_analyze_request(
     description: str,
     photo_file_id: str | None = None,
     photo_bytes: bytes | None = None,
+    urgency_code: str = "ordinary",
 ) -> tuple[RepairRequest | None, str]:
     """Надёжно создаёт заявку, затем пытается дополнить её AI-оценкой."""
     async with SessionLocal() as db:
         user = await get_user_by_telegram_id(db, str(telegram_id))
         if user is None:
             return None, "client"
-        request = await create_repair_request(db, user.id, description)
+        request = await create_repair_request(db, user.id, description, urgency_code)
         role = user.role
     try:
         result = await analyze_repair_request(description, photo_bytes)
@@ -289,7 +340,11 @@ async def finish_request_creation(
         await message.answer("ℹ️ Начните создание заявки заново.")
         return
     request, role = await create_and_analyze_request(
-        actor_id, description, photo_file_id, photo_bytes
+        actor_id,
+        description,
+        photo_file_id,
+        photo_bytes,
+        data.get("urgency_code", "ordinary"),
     )
     await state.clear()
     if request is None:

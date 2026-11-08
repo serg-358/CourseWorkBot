@@ -1,6 +1,7 @@
 """Обработчики раздела registration."""
 
 import html
+import hashlib
 import time
 from aiogram import F
 from aiogram.exceptions import TelegramAPIError
@@ -9,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from repair_bot.database.crud.requests import get_request_status_counts, get_user_requests
 from repair_bot.database.crud.users import create_user, get_all_users, get_user_by_telegram_id
+from repair_bot.database.crud.web import link_telegram_account
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import dialog_keyboard, main_menu_keyboard, request_navigation_keyboard
 from repair_bot.states import RegistrationStates, RequestStates
@@ -19,10 +21,10 @@ from repair_bot.handlers.common import (
     bounded_page,
     cancel_dialog,
     client_request_text,
+    configured_role_for_telegram_id,
     dashboard_text,
     edit_callback_screen,
     edit_state_screen,
-    is_demo_switch_user,
     menu_for_user,
     normalize_phone,
     role_for_telegram_id,
@@ -38,6 +40,28 @@ logger = logging.getLogger(__name__)
 @router.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext) -> None:
     await cancel_dialog(message, state)
+
+
+@router.message(Command("link"))
+async def link_website_account(message: Message) -> None:
+    """Привязывает зарегистрированный Telegram к веб-аккаунту одноразовым кодом."""
+    if message.from_user is None:
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) != 2 or not 8 <= len(parts[1].strip()) <= 64:
+        await message.answer("Используйте команду из кабинета: /link одноразовый_код")
+        return
+    code_hash = hashlib.sha256(parts[1].strip().encode()).hexdigest()
+    async with SessionLocal() as db:
+        result = await link_telegram_account(db, str(message.from_user.id), code_hash)
+    messages = {
+        "linked": "✅ Telegram-аккаунт привязан к личному кабинету сайта.",
+        "invalid": "⚠️ Код неверный или срок его действия истёк. Создайте новый в кабинете.",
+        "telegram_user_missing": "Сначала зарегистрируйтесь в боте командой /start.",
+        "account_already_linked": "Этот аккаунт сайта уже связан с Telegram.",
+        "telegram_already_linked": "Этот Telegram уже привязан к другому аккаунту сайта.",
+    }
+    await message.answer(messages[result])
 
 @router.callback_query(F.data == "dialog:cancel")
 async def cancel_button(callback: CallbackQuery, state: FSMContext) -> None:
@@ -122,12 +146,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         user = await get_user_by_telegram_id(db, str(message.from_user.id))
         status_counts = None
         admin_counts = None
-        if user:
-            expected_role = role_for_telegram_id(message.from_user.id)
-        else:
-            expected_role = None
-        if user and user.role != expected_role:
-            # Роль определяется только числовым Telegram ID из списка доверия.
+        expected_role = configured_role_for_telegram_id(message.from_user.id)
+        if user and expected_role and user.role != expected_role:
+            # .env задаёт начальные роли, дальнейшие назначения сохраняются в БД.
             user.role = expected_role
             await db.commit()
         if user and user.role in {"admin", "master"}:
@@ -143,7 +164,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if user:
         displayed_role = (
             _demo_view_roles.get(message.from_user.id, user.role)
-            if is_demo_switch_user(message.from_user.id)
+            if user.role == "admin"
             else user.role
         )
         if displayed_role == "client":
@@ -196,8 +217,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.in_({"view:admin", "view:master", "view:client", "demo:toggle"}))
 async def switch_demo_view(callback: CallbackQuery, state: FSMContext) -> None:
     """Переключает демонстрационные панели только для владельца-администратора."""
-    if callback.from_user is None or not is_demo_switch_user(callback.from_user.id):
-        await callback.answer("🔒 Переключение доступно только владельцу бота.", show_alert=True)
+    if callback.from_user is None:
+        return
+    if callback.message is None:
+        await callback.answer()
         return
     await state.clear()
 

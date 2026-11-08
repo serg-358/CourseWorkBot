@@ -3,6 +3,30 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
+def urgency_keyboard(tariffs) -> InlineKeyboardMarkup:
+    """Показывает клиенту уровни срочности с отдельной доплатой."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="dialog:cancel")],
+            *[
+                [
+                    InlineKeyboardButton(
+                        text=f"{tariff.label} · {format_surcharge(tariff.surcharge_kopecks)}",
+                        callback_data=f"urgency:choose:{tariff.code}",
+                    )
+                ]
+                for tariff in tariffs
+            ],
+        ]
+    )
+
+
+def format_surcharge(kopecks: int) -> str:
+    """Форматирует доплату в рублях без лишних нулей."""
+    amount = f"{kopecks / 100:,.2f}".replace(",", " ").replace(".00", "")
+    return f"+{amount} ₽" if kopecks else "без доплаты"
+
+
 def request_status_keyboard(request_id: int, current_status: str) -> InlineKeyboardMarkup:
     """Возвращает кнопки смены статуса заявки для мастера и администратора."""
     statuses = (
@@ -30,6 +54,7 @@ def request_navigation_keyboard(
     current_status: str | None = None,
     has_photo: bool = False,
     can_append_description: bool = False,
+    can_edit_assessment: bool = False,
 ) -> InlineKeyboardMarkup:
     """Объединяет листание заявки, действия сотрудника и основное меню."""
     callback_prefix = f"requests:{view}"
@@ -55,6 +80,15 @@ def request_navigation_keyboard(
     if request_id is not None and has_photo:
         rows.append(
             [InlineKeyboardButton(text="🖼️ Фото заявки", callback_data=f"request:photo:{request_id}")]
+        )
+    if request_id is not None and can_edit_assessment:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✏️ Исправить диагноз и цену",
+                    callback_data=f"request:edit:{request_id}",
+                )
+            ]
         )
     if request_id is not None and can_append_description:
         rows.append(

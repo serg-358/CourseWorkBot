@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from repair_bot.database.crud.requests import get_request_status_counts
 from repair_bot.database.crud.users import get_all_users
 from repair_bot.keyboards import main_menu_keyboard
+from repair_bot.keyboards.requests import format_surcharge
 from repair_bot.database.models import RepairRequest
 
 logger = logging.getLogger("repair_bot.handlers")
@@ -30,17 +31,26 @@ _processed_start_messages: dict[tuple[int, int], float] = {}
 _demo_view_roles: dict[int, str] = {}
 
 def is_demo_switch_user(telegram_id: int) -> bool:
-    """Демонстрационные панели доступны всем администраторам из доверенного списка."""
-    return is_admin_telegram_id(telegram_id)
+    """Проверяет, есть ли у администратора активный режим демонстрации."""
+    return telegram_id in _demo_view_roles
 
 def menu_for_user(telegram_id: int, actual_role: str):
     """Строит меню, не меняя реальную роль пользователя."""
-    demo_role = _demo_view_roles.get(telegram_id) if is_demo_switch_user(telegram_id) else None
+    demo_role = _demo_view_roles.get(telegram_id) if actual_role == "admin" else None
     return main_menu_keyboard(
         demo_role or actual_role,
         demo_role=demo_role,
-        allow_role_switch=is_demo_switch_user(telegram_id) and actual_role == "admin",
+        allow_role_switch=actual_role == "admin",
     )
+
+
+def configured_role_for_telegram_id(telegram_id: int) -> str | None:
+    """Возвращает bootstrap-роль из .env или None, если ID там не указан."""
+    if is_admin_telegram_id(telegram_id):
+        return "admin"
+    if is_master_telegram_id(telegram_id):
+        return "master"
+    return None
 
 def is_admin_telegram_id(telegram_id: int) -> bool:
     """Сверяет числовой Telegram ID с доверенным списком из .env."""
@@ -61,12 +71,8 @@ def is_master_telegram_id(telegram_id: int) -> bool:
     return str(telegram_id) in configured_ids
 
 def role_for_telegram_id(telegram_id: int) -> str:
-    """Определяет действительную роль по доверенным спискам ID."""
-    if is_admin_telegram_id(telegram_id):
-        return "admin"
-    if is_master_telegram_id(telegram_id):
-        return "master"
-    return "client"
+    """Возвращает начальную роль из .env или роль клиента по умолчанию."""
+    return configured_role_for_telegram_id(telegram_id) or "client"
 
 def is_staff_telegram_id(telegram_id: int) -> bool:
     """Мастер и администратор могут обрабатывать заявки."""
@@ -105,19 +111,41 @@ def admin_request_text(request: RepairRequest) -> str:
         f"{html.escape(request_description_preview(request.description))}"
     )
     assessment = getattr(request, "ai_assessment", None)
+    staff_edits = getattr(request, "staff_edits", None) or []
+    current_edit = staff_edits[-1] if staff_edits else None
     if assessment is None:
-        return f"{text}\n\n⚠️ ИИ-диагностика недоступна."
-    cost = format_rubles(assessment.estimated_cost_kopecks)
-    price = format_rubles(assessment.client_price_kopecks)
-    urgency = {"low": "Плановая", "medium": "В ближайшее время", "high": "Срочная"}.get(request.priority, request.priority)
-    return (
-        f"{text}\n\n🤖 <b>Предварительная оценка ИИ</b>\n\n"
-        f"<b>⏱ Срочность</b>\n{urgency}\n\n"
-        f"<b>🔎 Предварительная причина</b>\n{html.escape(assessment.master_diagnosis)}\n\n"
-        f"<b>🧩 Детали для проверки</b>\n{html.escape(assessment.parts)}\n\n"
-        f"<b>🛠 Инструменты</b>\n{html.escape(assessment.tools)}\n\n"
-        f"<b>💰 Расчёт</b>\nСебестоимость: {cost}\nЦена для клиента: {price}"
-    )
+        text += "\n\n⚠️ ИИ-диагностика недоступна."
+    else:
+        cost = format_rubles(assessment.estimated_cost_kopecks)
+        price = format_rubles(assessment.client_price_kopecks)
+        urgency = {"low": "Плановая", "medium": "В ближайшее время", "high": "Срочная"}.get(request.priority, request.priority)
+        text += (
+            "\n\n🤖 <b>Исходная предварительная оценка ИИ</b>\n\n"
+            f"<b>⏱ Технический приоритет</b>\n{urgency}\n\n"
+            f"<b>🔎 Предварительная причина</b>\n{html.escape(assessment.master_diagnosis)}\n\n"
+            f"<b>🧩 Детали для проверки</b>\n{html.escape(assessment.parts)}\n\n"
+            f"<b>🛠 Инструменты</b>\n{html.escape(assessment.tools)}\n\n"
+            f"<b>💰 Расчёт ИИ</b>\nСебестоимость: {cost}\nЦена для клиента: {price}"
+        )
+    if current_edit is not None:
+        urgency_record = getattr(request, "urgency", None)
+        surcharge = urgency_record.surcharge_kopecks if urgency_record else 0
+        urgency_label = html.escape(urgency_record.label) if urgency_record else "Обычная"
+        text += (
+            "\n\n✅ <b>Последняя проверка сотрудника</b>\n"
+            f"Диагноз: {html.escape(current_edit.diagnosis)}\n"
+            f"Стоимость ремонта: {format_rubles(current_edit.client_price_kopecks)}\n"
+            f"Срочность: {urgency_label} ({format_surcharge(surcharge)})\n"
+            f"Итого: {format_rubles(current_edit.client_price_kopecks + surcharge)}\n"
+            f"Исправил: {html.escape(current_edit.editor_name)}"
+        )
+    urgency_record = getattr(request, "urgency", None)
+    if urgency_record is not None:
+        text += (
+            f"\n\n⏱ <b>Срочность клиента</b>: {html.escape(urgency_record.label)} "
+            f"({format_surcharge(urgency_record.surcharge_kopecks)})"
+        )
+    return text
 
 def client_request_text(request: RepairRequest) -> str:
     """Формирует компактную карточку заявки для клиента."""
@@ -131,19 +159,47 @@ def client_request_text(request: RepairRequest) -> str:
     text = (
         f"🧾 <b>Заявка №{request.id}</b>\n"
         f"📌 Статус: {status_labels.get(request.status, request.status)}\n"
-        f"🎯 Приоритет: {priority_labels.get(request.priority, request.priority)}\n\n"
+        f"🤖 Предварительный технический приоритет ИИ: "
+        f"{priority_labels.get(request.priority, request.priority)}\n\n"
         f"{html.escape(request_description_preview(request.description))}"
     )
     assessment = getattr(request, "ai_assessment", None)
+    staff_edits = getattr(request, "staff_edits", None) or []
+    urgency_record = getattr(request, "urgency", None)
+    surcharge = urgency_record.surcharge_kopecks if urgency_record else 0
+    urgency_label = html.escape(urgency_record.label) if urgency_record else "Обычная"
+    urgency_summary = (
+        f"\n\n⏱ Срочность: {urgency_label} "
+        f"({format_surcharge(surcharge)})"
+    )
+    if staff_edits:
+        current_edit = staff_edits[-1]
+        repair_price = current_edit.client_price_kopecks
+        return (
+            f"{text}\n\n✅ <b>Проверено специалистом</b>\n"
+            f"Диагноз: {html.escape(current_edit.diagnosis)}\n"
+            f"Стоимость ремонта: {format_rubles(repair_price)}\n"
+            f"Доплата за срочность: {format_rubles(surcharge)}\n"
+            f"Итого предварительно: {format_rubles(repair_price + surcharge)}"
+            f"{urgency_summary}\n"
+            f"Специалист: {html.escape(current_edit.editor_name)}"
+        )
     if assessment is None:
-        return text
+        return f"{text}{urgency_summary}"
     price = format_rubles(assessment.client_price_kopecks)
+    total = (
+        format_rubles(assessment.client_price_kopecks + surcharge)
+        if assessment.client_price_kopecks is not None
+        else "определит мастер после диагностики"
+    )
     return (
         f"{text}\n\n🤖 <b>Предварительная оценка ИИ</b>\n\n"
         f"<b>🔎 Возможные причины</b>\n{html.escape(assessment.client_causes)}\n\n"
         f"<b>🛡 Безопасные рекомендации</b>\n{html.escape(assessment.client_recommendations)}\n\n"
         f"⚠️ {html.escape(assessment.safety_note)}\n\n"
-        f"<b>💰 Ориентировочная цена</b>\n{price}\n\n"
+        f"<b>💰 Стоимость ремонта</b>\n{price}\n"
+        f"Доплата за срочность: {format_rubles(surcharge)}\n"
+        f"Итого предварительно: {total}{urgency_summary}\n\n"
         "ℹ️ Точный диагноз и цену подтвердит мастер."
     )
 

@@ -54,6 +54,9 @@ process_invalid_request_photo = client_requests.process_invalid_request_photo
 show_all_requests = staff_requests.show_all_requests
 show_request_photo = staff_requests.show_request_photo
 change_request_status = staff_requests.change_request_status
+start_request_staff_edit = staff_requests.start_request_staff_edit
+process_staff_diagnosis = staff_requests.process_staff_diagnosis
+process_staff_price = staff_requests.process_staff_price
 show_users = admin.show_users
 show_administrators = admin.show_administrators
 show_statistics = admin.show_statistics
@@ -103,6 +106,8 @@ __all__ = [
     "process_request_addition",
     "process_request_description",
     "process_request_photo",
+    "process_staff_diagnosis",
+    "process_staff_price",
     "request_description_preview",
     "role_for_telegram_id",
     "router",
@@ -119,5 +124,6 @@ __all__ = [
     "skip_request_photo",
     "start_request_addition",
     "start_request_creation",
+    "start_request_staff_edit",
     "switch_demo_view",
 ]

@@ -3,7 +3,9 @@ from repair_bot.keyboards import (
     main_menu_keyboard,
     photo_dialog_keyboard,
     request_navigation_keyboard,
+    urgency_keyboard,
 )
+from repair_bot.handlers.staff_requests import parse_client_price
 
 
 def test_normalize_russian_phone_formats():
@@ -68,7 +70,47 @@ def test_photo_dialog_has_skip_and_staff_photo_button():
         request_id=12,
         current_status="new",
         has_photo=True,
+        can_edit_assessment=True,
     )
     assert "request:photo:12" in {
         button.callback_data for row in keyboard.inline_keyboard for button in row
     }
+    assert "request:edit:12" in {
+        button.callback_data for row in keyboard.inline_keyboard for button in row
+    }
+
+
+def test_client_price_is_parsed_as_integer_kopecks():
+    assert parse_client_price("2500") == 250000
+    assert parse_client_price("2500,50") == 250050
+    assert parse_client_price("0") == 0
+    assert parse_client_price("2 500") == 250000
+    assert parse_client_price("2500.555") is None
+
+
+def test_urgency_keyboard_shows_selected_fee_separately():
+    from types import SimpleNamespace
+
+    keyboard = urgency_keyboard(
+        [
+            SimpleNamespace(code="ordinary", label="Обычная", surcharge_kopecks=0),
+            SimpleNamespace(code="urgent", label="Срочная", surcharge_kopecks=50_000),
+            SimpleNamespace(code="critical", label="Критическая", surcharge_kopecks=100_000),
+        ]
+    )
+    buttons = [
+        button
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data != "dialog:cancel"
+    ]
+    assert [button.text for button in buttons] == [
+        "Обычная · без доплаты",
+        "Срочная · +500 ₽",
+        "Критическая · +1 000 ₽",
+    ]
+    assert [button.callback_data for button in buttons] == [
+        "urgency:choose:ordinary",
+        "urgency:choose:urgent",
+        "urgency:choose:critical",
+    ]

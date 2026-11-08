@@ -2,9 +2,16 @@
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
-from repair_bot.database.models import RepairRequest, RepairRequestAiAssessment
+from repair_bot.database.crud.pricing import get_urgency_tariff
+from repair_bot.database.models import (
+    RepairRequest,
+    RepairRequestAiAssessment,
+    RepairRequestStaffEdit,
+    RequestUrgency,
+    User,
+)
 
 
 async def get_request_status_counts(db: AsyncSession) -> dict[str, int]:
@@ -24,11 +31,23 @@ async def get_request_status_counts(db: AsyncSession) -> dict[str, int]:
 
 
 async def create_repair_request(
-    db: AsyncSession, user_id: int, description: str
+    db: AsyncSession, user_id: int, description: str, urgency_code: str = "ordinary"
 ) -> RepairRequest:
-    """Создаёт заявку, связанную с зарегистрированным пользователем."""
+    """Создаёт заявку и сохраняет снимок выбранной доплаты за срочность."""
+    tariff = await get_urgency_tariff(db, urgency_code)
+    if tariff is None:
+        raise ValueError("Выбранный тариф срочности недоступен.")
     request = RepairRequest(user_id=user_id, description=description)
     db.add(request)
+    await db.flush()
+    db.add(
+        RequestUrgency(
+            request_id=request.id,
+            tariff_code=tariff.code,
+            label=tariff.label,
+            surcharge_kopecks=tariff.surcharge_kopecks,
+        )
+    )
     await db.commit()
     await db.refresh(request)
     return request
@@ -38,7 +57,14 @@ async def get_repair_request(db: AsyncSession, request_id: int) -> RepairRequest
     """Возвращает заявку по первичному ключу вместе с владельцем."""
     result = await db.execute(
         select(RepairRequest)
-        .options(joinedload(RepairRequest.user), joinedload(RepairRequest.ai_assessment))
+        .options(
+            joinedload(RepairRequest.user),
+            joinedload(RepairRequest.ai_assessment),
+            joinedload(RepairRequest.urgency),
+            selectinload(RepairRequest.staff_edits).joinedload(
+                RepairRequestStaffEdit.editor
+            ),
+        )
         .where(RepairRequest.id == request_id)
     )
     return result.scalar_one_or_none()
@@ -48,7 +74,13 @@ async def get_user_requests(db: AsyncSession, user_id: int) -> list[RepairReques
     """Возвращает заявки пользователя от новых к старым."""
     result = await db.execute(
         select(RepairRequest)
-        .options(joinedload(RepairRequest.ai_assessment))
+        .options(
+            joinedload(RepairRequest.ai_assessment),
+            joinedload(RepairRequest.urgency),
+            selectinload(RepairRequest.staff_edits).joinedload(
+                RepairRequestStaffEdit.editor
+            ),
+        )
         .where(RepairRequest.user_id == user_id)
         .order_by(RepairRequest.created_at.desc(), RepairRequest.id.desc())
     )
@@ -59,7 +91,14 @@ async def get_all_requests(db: AsyncSession) -> list[RepairRequest]:
     """Возвращает заявки вместе с данными их владельцев."""
     result = await db.execute(
         select(RepairRequest)
-        .options(joinedload(RepairRequest.user), joinedload(RepairRequest.ai_assessment))
+        .options(
+            joinedload(RepairRequest.user),
+            joinedload(RepairRequest.ai_assessment),
+            joinedload(RepairRequest.urgency),
+            selectinload(RepairRequest.staff_edits).joinedload(
+                RepairRequestStaffEdit.editor
+            ),
+        )
         .order_by(RepairRequest.created_at.desc(), RepairRequest.id.desc())
     )
     return list(result.scalars().all())
@@ -129,6 +168,31 @@ async def save_ai_assessment(
     await db.commit()
     await db.refresh(assessment)
     return assessment
+
+
+async def add_request_staff_edit(
+    db: AsyncSession,
+    request_id: int,
+    editor_user_id: int,
+    diagnosis: str,
+    client_price_kopecks: int,
+) -> RepairRequestStaffEdit | None:
+    """Добавляет подтверждённую правку и сохраняет автора для аудита."""
+    request = await db.get(RepairRequest, request_id)
+    editor = await db.get(User, editor_user_id)
+    if request is None or editor is None:
+        return None
+    edit = RepairRequestStaffEdit(
+        request_id=request_id,
+        editor_user_id=editor_user_id,
+        editor_name=editor.full_name,
+        diagnosis=diagnosis,
+        client_price_kopecks=client_price_kopecks,
+    )
+    db.add(edit)
+    await db.commit()
+    await db.refresh(edit)
+    return edit
 
 
 async def delete_repair_request(db: AsyncSession, request_id: int) -> bool:

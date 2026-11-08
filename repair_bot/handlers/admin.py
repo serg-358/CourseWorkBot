@@ -11,9 +11,8 @@ from repair_bot.keyboards import main_menu_keyboard
 from repair_bot.handlers.common import (
     _demo_view_roles,
     edit_callback_screen,
-    is_admin_telegram_id,
+    configured_role_for_telegram_id,
     menu_for_user,
-    role_for_telegram_id,
 )
 import logging
 from aiogram import Router
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 @router.callback_query(F.data.startswith("menu:users"))
 async def show_users(callback: CallbackQuery, state: FSMContext) -> None:
     """Показывает администратору пользователей выбранной роли."""
-    if callback.from_user is None or not is_admin_telegram_id(callback.from_user.id):
+    if callback.from_user is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
     await state.clear()
@@ -76,7 +75,7 @@ async def show_users(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "menu:admins")
 async def show_administrators(callback: CallbackQuery, state: FSMContext) -> None:
     """Показывает отдельный список аккаунтов с ролью администратора."""
-    if callback.from_user is None or not is_admin_telegram_id(callback.from_user.id):
+    if callback.from_user is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
     await state.clear()
@@ -104,7 +103,7 @@ async def show_administrators(callback: CallbackQuery, state: FSMContext) -> Non
 @router.callback_query(F.data == "menu:statistics")
 async def show_statistics(callback: CallbackQuery, state: FSMContext) -> None:
     """Показывает доступную сейчас статистику по зарегистрированным пользователям."""
-    if callback.from_user is None or not is_admin_telegram_id(callback.from_user.id):
+    if callback.from_user is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
     await state.clear()
@@ -153,12 +152,9 @@ async def show_profile(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     async with SessionLocal() as db:
         user = await get_user_by_telegram_id(db, str(callback.from_user.id))
-        if user:
-            expected_role = role_for_telegram_id(callback.from_user.id)
-        else:
-            expected_role = None
-        if user and user.role != expected_role:
-            # Поддерживаем отображаемую роль в соответствии с allowlist Telegram ID.
+        expected_role = configured_role_for_telegram_id(callback.from_user.id)
+        if user and expected_role and user.role != expected_role:
+            # .env задаёт начальные роли; назначения сайта сохраняются в БД.
             user.role = expected_role
             await db.commit()
 

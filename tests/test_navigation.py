@@ -63,10 +63,74 @@ def test_ai_assessment_text_is_split_into_readable_blocks():
 
     assert "<b>🔎 Возможные причины</b>\nСбой памяти\n\n" in client_text
     assert "<b>🛡 Безопасные рекомендации</b>" in client_text
-    assert "<b>💰 Ориентировочная цена</b>\n2 500 ₽" in client_text
+    assert "<b>💰 Стоимость ремонта</b>\n2 500 ₽" in client_text
+    assert "Предварительный технический приоритет ИИ" in client_text
+    assert "Доплата за срочность: 0 ₽" in client_text
+    assert "Итого предварительно: 2 500 ₽" in client_text
     assert "<b>🔎 Предварительная причина</b>\nПроверить модули памяти.\n\n" in master_text
     assert "<b>🧩 Детали для проверки</b>" in master_text
-    assert "<b>💰 Расчёт</b>\nСебестоимость: 2 000 ₽" in master_text
+    assert "<b>💰 Расчёт ИИ</b>\nСебестоимость: 2 000 ₽" in master_text
+
+
+def test_client_card_adds_urgency_fee_to_estimate_and_keeps_it_separate():
+    request = SimpleNamespace(
+        id=8,
+        status="new",
+        priority="medium",
+        description="Компьютер шумит.",
+        user=SimpleNamespace(full_name="Клиент", phone="+79990000000"),
+        ai_assessment=SimpleNamespace(
+            client_causes="Пыль",
+            client_recommendations="Выключите устройство.",
+            safety_note="Не вскрывайте корпус.",
+            client_price_kopecks=250_000,
+        ),
+        urgency=SimpleNamespace(label="Срочная", surcharge_kopecks=50_000),
+        staff_edits=[],
+    )
+
+    text = auth.client_request_text(request)
+
+    assert "Стоимость ремонта</b>\n2 500 ₽" in text
+    assert "Доплата за срочность: 500 ₽" in text
+    assert "Итого предварительно: 3 000 ₽" in text
+
+
+def test_staff_correction_is_shown_to_client_and_keeps_ai_result():
+    assessment = SimpleNamespace(
+        client_causes="Сбой памяти",
+        client_recommendations="Сохраните данные.",
+        safety_note="Выключите компьютер.",
+        master_diagnosis="Проверить память.",
+        parts="RAM",
+        tools="Тестер",
+        estimated_cost_kopecks=100000,
+        client_price_kopecks=150000,
+    )
+    correction = SimpleNamespace(
+        diagnosis="Заменить неисправный модуль памяти.",
+        client_price_kopecks=220000,
+        editor_name="Мастер Сергей",
+    )
+    request = SimpleNamespace(
+        id=44,
+        status="in_progress",
+        priority="medium",
+        description="Компьютер перезагружается.",
+        user=SimpleNamespace(full_name="Клиент", phone="+79990000000"),
+        ai_assessment=assessment,
+        staff_edits=[correction],
+    )
+
+    client_text = auth.client_request_text(request)
+    staff_text = auth.admin_request_text(request)
+
+    assert "Заменить неисправный модуль памяти." in client_text
+    assert "2 200 ₽" in client_text
+    assert "Мастер Сергей" in client_text
+    assert "Исходная предварительная оценка ИИ" in staff_text
+    assert "Проверить память." in staff_text
+    assert "Заменить неисправный модуль памяти." in staff_text
 
 
 def test_open_client_request_has_append_description_action():
@@ -190,7 +254,7 @@ async def test_repeated_start_sends_a_new_screen(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_request_creation_sends_a_new_dialog_screen(monkeypatch):
+async def test_request_creation_edits_screen_to_show_urgency_choices(monkeypatch):
     class Session:
         async def __aenter__(self):
             return self
@@ -202,6 +266,17 @@ async def test_request_creation_sends_a_new_dialog_screen(monkeypatch):
     monkeypatch.setattr(client_requests,
         "get_user_by_telegram_id",
         AsyncMock(return_value=SimpleNamespace(role="client")),
+    )
+    monkeypatch.setattr(
+        client_requests,
+        "get_urgency_tariffs",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    code="ordinary", label="Обычная", surcharge_kopecks=0
+                )
+            ]
+        ),
     )
     message = SimpleNamespace(
         chat=SimpleNamespace(id=100),
@@ -219,13 +294,20 @@ async def test_request_creation_sends_a_new_dialog_screen(monkeypatch):
     await auth.start_request_creation(callback, state)
 
     callback.answer.assert_awaited_once()
-    message.answer.assert_awaited_once()
-    message.edit_text.assert_not_awaited()
-    state.update_data.assert_not_awaited()
+    message.answer.assert_not_awaited()
+    message.edit_text.assert_awaited_once()
+    state.update_data.assert_awaited_once_with(
+        screen_chat_id=100, screen_message_id=200
+    )
 
 
 @pytest.mark.asyncio
-async def test_request_description_sends_photo_prompt_without_editing_screen():
+async def test_request_description_sends_photo_prompt_without_editing_screen(monkeypatch):
+    monkeypatch.setattr(
+        client_requests,
+        "current_user_role",
+        AsyncMock(return_value="client"),
+    )
     message = SimpleNamespace(
         from_user=SimpleNamespace(id=55),
         text="Компьютер не включается после выключения света.",
@@ -522,8 +604,19 @@ async def test_skipping_photo_shows_and_removes_ai_progress_message(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_staff_request_callback_keeps_access_check(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
     monkeypatch.setenv("ADMIN_TELEGRAM_IDS", "")
     monkeypatch.setenv("MASTER_TELEGRAM_IDS", "")
+    monkeypatch.setattr(staff_requests, "SessionLocal", Session)
+    monkeypatch.setattr(
+        staff_requests, "get_user_by_telegram_id", AsyncMock(return_value=None)
+    )
     callback = SimpleNamespace(
         data="menu:all_requests",
         from_user=SimpleNamespace(id=55),
@@ -536,6 +629,40 @@ async def test_staff_request_callback_keeps_access_check(monkeypatch):
 
     callback.answer.assert_awaited_once()
     callback.message.edit_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_staff_edit_callback_rejects_non_staff(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    monkeypatch.setattr(
+        staff_requests,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        staff_requests, "get_repair_request", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(staff_requests, "SessionLocal", Session)
+    callback = SimpleNamespace(
+        data="request:edit:42",
+        from_user=SimpleNamespace(id=55),
+        message=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=200),
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(clear=AsyncMock())
+
+    await staff_requests.start_request_staff_edit(callback, state)
+
+    callback.answer.assert_awaited_once_with(
+        "🔒 Нет прав на исправление заявки.", show_alert=True
+    )
+    state.clear.assert_not_awaited()
 
 
 @pytest.mark.asyncio

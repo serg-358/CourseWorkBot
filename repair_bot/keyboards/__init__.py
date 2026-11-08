@@ -5,7 +5,11 @@ from repair_bot.keyboards.menus import (
     main_menu_keyboard,
     photo_dialog_keyboard,
 )
-from repair_bot.keyboards.requests import request_navigation_keyboard, request_status_keyboard
+from repair_bot.keyboards.requests import (
+    request_navigation_keyboard,
+    request_status_keyboard,
+    urgency_keyboard,
+)
 
 __all__ = [
     "dialog_keyboard",
@@ -13,4 +17,5 @@ __all__ = [
     "photo_dialog_keyboard",
     "request_navigation_keyboard",
     "request_status_keyboard",
+    "urgency_keyboard",
 ]

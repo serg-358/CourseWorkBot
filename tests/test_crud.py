@@ -2,6 +2,7 @@ import pytest
 
 from repair_bot.database.crud.requests import (
     append_request_description,
+    add_request_staff_edit,
     create_repair_request,
     delete_repair_request,
     get_all_requests,
@@ -10,6 +11,10 @@ from repair_bot.database.crud.requests import (
     get_user_requests,
     save_ai_assessment,
     update_request_status,
+)
+from repair_bot.database.crud.pricing import (
+    get_urgency_tariffs,
+    update_urgency_tariff,
 )
 from repair_bot.services.pricing.catalog import calculate_cost
 from repair_bot.database.crud.users import (
@@ -54,6 +59,8 @@ async def test_repair_request_crud_and_status_counts(db_session):
     loaded = await get_repair_request(db_session, request.id)
     assert loaded is not None
     assert loaded.user.telegram_id == "1002"
+    assert loaded.urgency.label == "Обычная"
+    assert loaded.urgency.surcharge_kopecks == 0
     assert len(await get_user_requests(db_session, user.id)) == 1
     assert len(await get_all_requests(db_session)) == 1
     assert (await get_request_status_counts(db_session))["new"] == 1
@@ -68,6 +75,35 @@ async def test_repair_request_crud_and_status_counts(db_session):
     assert await delete_repair_request(db_session, request.id) is True
     assert await delete_repair_request(db_session, request.id) is False
     assert await get_repair_request(db_session, request.id) is None
+
+
+@pytest.mark.asyncio
+async def test_urgency_tariffs_and_request_snapshot(db_session):
+    user = await create_user(db_session, "1005", "Клиент", "+79990000005")
+    tariffs = await get_urgency_tariffs(db_session)
+    assert [(item.code, item.surcharge_kopecks) for item in tariffs] == [
+        ("ordinary", 0),
+        ("urgent", 50_000),
+        ("critical", 100_000),
+    ]
+
+    request = await create_repair_request(
+        db_session, user.id, "Срочно нужен ремонт компьютера", "urgent"
+    )
+    updated_tariff = await update_urgency_tariff(
+        db_session, "urgent", label="Срочно", surcharge_kopecks=60_000
+    )
+    assert updated_tariff is not None
+    assert updated_tariff.surcharge_kopecks == 60_000
+    saved_request = await get_repair_request(db_session, request.id)
+    assert saved_request is not None
+    assert saved_request.urgency.label == "Срочная"
+    assert saved_request.urgency.surcharge_kopecks == 50_000
+
+    with pytest.raises(ValueError):
+        await update_urgency_tariff(
+            db_session, "urgent", label="Срочная", surcharge_kopecks=-1
+        )
 
 
 @pytest.mark.asyncio
@@ -87,6 +123,31 @@ async def test_append_request_description_preserves_existing_text(db_session):
         "Проблема появилась после обновления Windows."
     )
     assert await append_request_description(db_session, -1, "Деталь") is None
+
+
+@pytest.mark.asyncio
+async def test_staff_edits_keep_author_and_latest_client_estimate(db_session):
+    client = await create_user(db_session, "2001", "Клиент", "+79990000001")
+    master = await create_user(
+        db_session, "2002", "Мастер", "+79990000002", role="master"
+    )
+    request = await create_repair_request(db_session, client.id, "Компьютер выключается.")
+
+    await add_request_staff_edit(
+        db_session, request.id, master.id, "Проверить блок питания.", 125000
+    )
+    await add_request_staff_edit(
+        db_session, request.id, master.id, "Заменить блок питания.", 180000
+    )
+
+    saved_request = await get_repair_request(db_session, request.id)
+
+    assert [edit.diagnosis for edit in saved_request.staff_edits] == [
+        "Проверить блок питания.",
+        "Заменить блок питания.",
+    ]
+    assert saved_request.staff_edits[-1].client_price_kopecks == 180000
+    assert saved_request.staff_edits[-1].editor_name == "Мастер"
 
 
 @pytest.mark.asyncio

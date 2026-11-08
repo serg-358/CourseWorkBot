@@ -1,0 +1,11 @@
+[Unit]
+Description=Run CourseWorkBot database backup every two weeks
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=14d
+Persistent=true
+Unit=courseworkbot-backup.service
+
+[Install]
+WantedBy=timers.target
