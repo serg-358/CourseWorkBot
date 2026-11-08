@@ -1,6 +1,6 @@
 """CRUD-операции для заявок на ремонт."""
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -11,6 +11,7 @@ from repair_bot.database.models import (
     RepairRequestStaffEdit,
     RequestUrgency,
     User,
+    GiftCertificate,
 )
 
 
@@ -66,6 +67,7 @@ async def get_repair_request(db: AsyncSession, request_id: int) -> RepairRequest
             ),
         )
         .where(RepairRequest.id == request_id)
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 
@@ -112,6 +114,9 @@ async def update_request_status(
     if request is None:
         return None
     request.status = status
+    await db.flush()
+    from repair_bot.database.crud.certificates import settle_for_status
+    await settle_for_status(db, request_id, status)
     await db.commit()
     await db.refresh(request)
     return request
@@ -190,6 +195,10 @@ async def add_request_staff_edit(
         client_price_kopecks=client_price_kopecks,
     )
     db.add(edit)
+    await db.flush()
+    if request.status == "completed":
+        from repair_bot.database.crud.certificates import issue_for_request
+        await issue_for_request(db, request_id)
     await db.commit()
     await db.refresh(edit)
     return edit
@@ -200,6 +209,8 @@ async def delete_repair_request(db: AsyncSession, request_id: int) -> bool:
     request = await db.get(RepairRequest, request_id)
     if request is None:
         return False
+    await db.execute(update(GiftCertificate).where(GiftCertificate.source_request_id == request_id).values(source_request_id=None))
+    await db.execute(update(GiftCertificate).where(GiftCertificate.target_request_id == request_id).values(target_request_id=None))
     await db.delete(request)
     await db.commit()
     return True

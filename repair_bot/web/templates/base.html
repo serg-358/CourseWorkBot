@@ -20,8 +20,8 @@
             <a class="nav-link{% if item.active %} active{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
           {% endfor %}
         {% else %}
-          <a class="nav-link" href="/#services">Услуги</a>
-          <a class="nav-link" href="/#reviews">Отзывы</a>
+          <a class="nav-link" href="/services">Услуги и цены</a>
+          <a class="nav-link" href="/documents">Гарантия</a>
           <a class="nav-link" href="/#process">Как проходит ремонт</a>
           <a class="nav-link" href="/#questions">Вопросы</a>
           <a class="nav-link" href="/login">Войти</a>
@@ -49,7 +49,7 @@
     {% if is_admin %}<nav class="preview-roles" aria-label="Просмотр интерфейсов"><span>Посмотреть интерфейс:</span><a href="/panel">Администратор</a><a href="/panel?view=client">Клиент</a><a href="/panel?view=master">Мастер</a></nav>{% endif %}
     {{ content|safe }}
   </main>
-  <footer class="site-footer"><div class="footer-inner"><span>ПК ДОКТОР</span><span>Заявки на ремонт и связь с мастером — в одном месте.</span></div></footer>
+  <footer class="site-footer"><div class="footer-inner"><span>ПК ДОКТОР</span><span><a href="/services">Услуги и цены</a> · <a href="/documents">Гарантия и документы</a></span></div></footer>
   <script>
     (() => {
       const root = document.documentElement;

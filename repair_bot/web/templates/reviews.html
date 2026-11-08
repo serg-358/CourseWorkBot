@@ -1,8 +1,0 @@
-<section class="reviews-section" id="reviews" aria-labelledby="reviews-title">
-  <div class="section-heading"><div><span class="eyebrow">ОБРАТНАЯ СВЯЗЬ</span><h2 id="reviews-title">Отзывы о ремонте</h2></div><p>Пока здесь примеры оформления.<br>Реальные отзывы ещё не опубликованы.</p></div>
-  <div class="reviews-grid">
-    {% for initials, service, quote in [('ПК','Диагностика компьютера','Понравилось, что причину неисправности объяснили понятными словами. Стоимость ремонта была видна в кабинете.'),('НБ','Обслуживание ноутбука','Удобно следить за заявкой с телефона. Уведомление о завершении ремонта пришло в Telegram.'),('SSD','Замена накопителя','В кабинете видно, что происходит с устройством и из чего складывается предварительная цена.') ] %}
-    <article class="review-card"><div class="review-top"><span class="review-avatar">{{ initials }}</span><span class="review-example">Демонстрационный пример</span></div><span class="review-quote" aria-hidden="true">“</span><blockquote>{{ quote }}</blockquote><div class="review-service">{{ service }}</div></article>
-    {% endfor %}
-  </div>
-</section>

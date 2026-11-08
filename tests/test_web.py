@@ -399,3 +399,40 @@ def test_priority_sort_and_combined_filter(order, expected):
     assert 'По приоритету' in page
     assert 'priority=high' in page
     assert '№3' in page and '№1' not in page
+
+@pytest.mark.asyncio
+async def test_onsite_request_entry_prices_and_clean_request_list(db_session_factory, monkeypatch):
+    monkeypatch.setattr(web_app, 'SessionLocal', db_session_factory)
+    async with AsyncClient(transport=ASGITransport(app=web_app.app),base_url='http://testserver') as client:
+        home=await client.get('/')
+        assert 'href="/request/new"' in home.text
+        assert 'Демонстрационный пример' not in home.text
+        services=await client.get('/services')
+        for title in ['Диагностика','Чистка и обслуживание охлаждения','Переустановка ОС','Комплектующие','Тарифы срочности']:
+            assert title in services.text
+        assert '575 ₽' in services.text
+        warranty=await client.get('/documents')
+        assert '30 ' in warranty.text
+        assert 'Документы о квалификации пока не опубликованы' in warranty.text
+        start=await client.get('/request/new',follow_redirects=False)
+        assert start.headers['location'] == '/login'
+        register=await client.get('/register')
+        csrf=re.search(r"name='csrf' value='([^']+)'",register.text).group(1)
+        created=await client.post('/register',data={'csrf':csrf,'email':'onsite@example.test','password':'password123','password_repeat':'password123'},follow_redirects=False)
+        assert created.headers['location'] == '/request/new'
+        onboarding=await client.get('/request/new')
+        assert 'Свяжите аккаунт с Telegram' in onboarding.text
+        async with db_session_factory() as db:
+            user=await create_user(db,'94601','Onsite client','+79990000001')
+            account=await web_app.account_by_email(db,'onsite@example.test')
+            account.user_id=user.id
+            await db.commit()
+        requests=await client.get('/panel?tab=requests&create=1',follow_redirects=True)
+        assert '<h1>Мои заявки</h1>' in requests.text
+        assert '<h1>Кабинет клиента</h1>' not in requests.text
+        assert 'Здравствуйте,' not in requests.text
+        assert "create-request-panel' open" in requests.text
+        assert (await client.post('/certificates/sync')).status_code == 403
+        assert (await client.post('/certificates/1/apply',data={'request_id':'1'})).status_code == 403
+        certificates=await client.get('/panel?tab=certificates')
+        assert 'Сертификатов пока нет' in certificates.text

@@ -46,7 +46,9 @@ from repair_bot.database.crud.requests import (
     update_request_status,
 )
 from repair_bot.database.crud.users import get_all_users
+from repair_bot.database.crud.certificates import list_certificates, reserve_certificate, sync_certificates
 from repair_bot.database.models import (
+    GiftCertificate,
     RepairRequest,
     RequestAddress,
     SiteText,
@@ -64,7 +66,7 @@ from repair_bot.handlers.staff_requests import parse_client_price
 from repair_bot.services.ai.diagnostics import analyze_repair_request
 from repair_bot.services.pricing.catalog import calculate_cost
 
-from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES
+from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES, service_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ SITE_TEXT_DEFAULTS = {
 }
 WEB_DIRECTORY = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
+templates.env.globals["money"] = format_rubles
 
 
 def create_app() -> FastAPI:
@@ -132,6 +135,35 @@ def create_app() -> FastAPI:
             return RedirectResponse("/panel", status_code=303)
         return render_page(request, "Регистрация", auth_form(request, "register"))
 
+    @app.get("/request/new")
+    async def new_request_entry(request: Request) -> Response:
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None:
+                request.session["after_auth"] = "request"
+                return RedirectResponse("/login", status_code=303)
+            if user is None:
+                request.session["create_after_link"] = True
+                return render_page(request, "Подключение Telegram", await unlinked_panel(request, account, db))
+            if user.role == "admin":
+                return RedirectResponse("/panel?tab=requests&create=1&view=client", status_code=303)
+            if user.role != "client":
+                return error_page(request, "Для создания клиентской заявки нужен аккаунт клиента. Очередь ремонтов доступна в кабинете мастера.", "/panel")
+        return RedirectResponse("/panel?tab=requests&create=1", status_code=303)
+
+    @app.get("/services")
+    async def public_services(request: Request) -> Response:
+        async with SessionLocal() as db:
+            await identity(request, db)
+            tariffs = await get_urgency_tariffs(db)
+        return render_page(request, "Услуги и цены", templates.get_template("services.html").render(services=service_catalog(), tariffs=tariffs))
+
+    @app.get("/documents")
+    async def documents(request: Request) -> Response:
+        async with SessionLocal() as db:
+            await identity(request, db)
+        return render_page(request, "Гарантия и документы", templates.get_template("documents.html").render())
+
     @app.post("/register")
     async def register(request: Request) -> Response:
         form = await read_form(request)
@@ -156,9 +188,10 @@ def create_app() -> FastAPI:
                 await db.rollback()
                 return error_page(request, "Аккаунт с таким email уже зарегистрирован.", "/login")
             await db.refresh(account)
+        destination = "/request/new" if request.session.get("after_auth") == "request" else "/panel"
         request.session.clear()
         request.session["account_id"] = account.id
-        return RedirectResponse("/panel", status_code=303)
+        return RedirectResponse(destination, status_code=303)
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request) -> Response:
@@ -178,9 +211,10 @@ def create_app() -> FastAPI:
             account = await account_by_email(db, email)
         if account is None or not verify_password(form.get("password", ""), account.password_hash):
             return error_page(request, "Не удалось войти. Проверьте email и пароль.", "/login")
+        destination = "/request/new" if request.session.get("after_auth") == "request" else "/panel"
         request.session.clear()
         request.session["account_id"] = account.id
-        return RedirectResponse("/panel", status_code=303)
+        return RedirectResponse(destination, status_code=303)
 
     @app.post("/logout")
     async def logout(request: Request) -> Response:
@@ -196,14 +230,21 @@ def create_app() -> FastAPI:
             account, user = await identity(request, db)
             if account is None:
                 return RedirectResponse("/login", status_code=303)
+            if user is not None and request.session.pop("create_after_link", False) and user.role == "client":
+                return RedirectResponse("/panel?tab=requests&create=1", status_code=303)
             tab = request.query_params.get("tab", "overview")
             if tab == "profile":
                 content = profile_content(account, user)
+            elif tab == "certificates" and user is not None:
+                gifts = await list_certificates(db, user.id)
+                items = await get_user_requests(db, user.id)
+                eligible = [item for item in items if item.status in {"new", "in_progress"} and item.staff_edits and not item.certificate_discount and request_price(item) > 0]
+                content = templates.get_template("certificates.html").render(gifts=gifts, items=eligible, csrf=csrf_token(request), preview=user.role == "admin" and effective_view(request, user) == "client")
             elif tab == "feedback":
                 content = feedback_content(csrf_token(request))
             elif tab == "tariffs":
                 tariffs = await get_urgency_tariffs(db)
-                content = "<h1>Тарифы срочности</h1><p>Доплата за срочность добавляется отдельно к стоимости ремонта.</p><div class='grid-nav'>" + "".join(f"<article class='card'><h2>{html.escape(t.label)}</h2><p>{format_rubles(t.surcharge_kopecks)}</p></article>" for t in tariffs) + "</div>"
+                content = templates.get_template("services.html").render(services=service_catalog(), tariffs=tariffs)
             elif tab == "overview" and user is not None:
                 role = effective_view(request, user)
                 items = await get_user_requests(db, user.id) if role == "client" else await get_all_requests(db)
@@ -403,6 +444,16 @@ def create_app() -> FastAPI:
             requests = await get_all_requests(db)
         return render_page(request, "Все заявки", "<h1>Все заявки</h1>" + requests_table(requests, staff=True, params=dict(request.query_params), path="/admin/requests"))
 
+    @app.get("/admin/certificates")
+    async def admin_certificates(request: Request) -> Response:
+        async with SessionLocal() as db:
+            _account, actor = await identity(request, db)
+            if actor is None or actor.role != "admin":
+                return forbidden_page(request)
+            gifts = list((await db.scalars(select(GiftCertificate).order_by(GiftCertificate.created_at.desc()))).all())
+            owners = {user.id: user.full_name for user in await get_all_users(db)}
+        return render_page(request, "Подарочные сертификаты", templates.get_template("admin_certificates.html").render(gifts=gifts, owners=owners))
+
     @app.post("/admin/tariffs/{code}")
     async def admin_update_tariff(request: Request, code: str) -> Response:
         form = await read_form(request)
@@ -498,6 +549,33 @@ def create_app() -> FastAPI:
                 return RedirectResponse(f"https://t.me/{info.username}", status_code=303)
         except TelegramAPIError:
             return Response("Telegram временно недоступен. Попробуйте позже.", status_code=503)
+
+    @app.post("/certificates/sync")
+    async def sync_own_certificates(request: Request) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        async with SessionLocal() as db:
+            _account, user = await identity(request, db)
+            if user is None:
+                return forbidden_page(request)
+            await sync_certificates(db, user.id)
+        return RedirectResponse("/panel?tab=certificates", status_code=303)
+
+    @app.post("/certificates/{certificate_id}/apply")
+    async def apply_certificate(request: Request, certificate_id: int) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        try:
+            target_id = int(form.get("request_id", ""))
+        except ValueError:
+            return error_page(request, "Выберите заявку для применения сертификата.", "/panel?tab=certificates")
+        async with SessionLocal() as db:
+            _account, user = await identity(request, db)
+            if user is None or not await reserve_certificate(db, user.id, certificate_id, target_id):
+                return error_page(request, "Сертификат недоступен или заявка не подходит. Нужен следующий открытый ремонт с проверенной мастером ценой.", "/panel?tab=certificates")
+        return RedirectResponse(f"/requests/{target_id}", status_code=303)
 
     @app.get("/bot-qr.png")
     async def bot_qr() -> Response:
@@ -718,26 +796,24 @@ async def client_panel(
         f"<label>Адрес выезда (необязательно)<input name='address' maxlength='500' value='{address_value}'></label>"
         f"<p class='muted'>{html.escape(texts['service_note'])}</p><button>Отправить заявку</button></form></section>"
     )
-    bot_link = "<a class='button primary' href='/bot'>Открыть Telegram-бота</a>"
+    form_html = ("<p class='dashboard-notice'>Предпросмотр клиента: показаны только ваши заявки; отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else ("<details class='create-request-panel' open>" if request.query_params.get("create") == "1" else "<details class='create-request-panel'>") + "<summary>＋ Создать заявку</summary>" + create_form + "</details>")
     return (
-        f"<section class='hero'><h1>Кабинет клиента</h1><p>Здравствуйте, {html.escape(user.full_name)}.</p>"
-        f"<p>Телефон: {html.escape(user.phone)}</p>"
-        f"<p>{html.escape(texts['client_welcome'])}</p>{bot_link}</section>"
-        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else ("<details class='create-request-panel' open>" if request.query_params.get("create") == "1" else "<details class='create-request-panel'>") + "<summary>＋ Создать заявку</summary>" + create_form + "</details>")
-        + "<section><h2>Ваши заявки</h2>"
+        "<section class='list-heading'><div><h1>Мои заявки</h1><p>Список обращений, статусы и предварительная стоимость ремонта.</p></div></section>"
+        + form_html
         + requests_table(requests, view="client" if user.role == "admin" else "", params=dict(request.query_params))
-        + "</section>"
     )
+
 
 
 async def master_panel(request: Request, user: User, db: AsyncSession) -> str:
     """Рендерит рабочую очередь мастера с формами исправления."""
     requests = await get_all_requests(db)
+    title = {"in_progress": "Заявки в работе", "closed": "Архив заявок"}.get(request.query_params.get("status"), "Очередь заявок")
     return (
-        f"<section class='hero'><h1>Панель мастера</h1><p>Здравствуйте, {html.escape(user.full_name)}. "
-        f"Заявок в очереди: {len(requests)}.</p></section>"
+        f"<section class='list-heading'><h1>{title}</h1><p>Диагностика, стоимость и статусы ремонта — в карточках обращений.</p></section>"
         + requests_table(requests, staff=True, view="master" if user.role == "admin" else "", params=dict(request.query_params))
     )
+
 
 
 async def admin_panel(request: Request, user: User, db: AsyncSession) -> str:
@@ -807,6 +883,7 @@ def auth_form(request: Request, mode: str) -> str:
     """Создает форму регистрации или входа."""
     csrf = csrf_token(request)
     is_register = mode == "register"
+    introduction = "<p>Войдите или создайте аккаунт, чтобы отправить заявку на сайте. После входа вы продолжите оформление.</p>" if request.session.get("after_auth") == "request" else ""
     fields = (
         "<label>Повторите пароль<input type='password' name='password_repeat' autocomplete='new-password' required></label>"
         if is_register
@@ -815,7 +892,7 @@ def auth_form(request: Request, mode: str) -> str:
     return (
         "<section class='auth-card'><h1>"
         + ("Создать аккаунт" if is_register else "Вход в кабинет")
-        + f"</h1><form method='post' action='/{mode}'>"
+        + f"</h1>{introduction}<form method='post' action='/{mode}'>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         "<label>Email<input type='email' name='email' maxlength='254' autocomplete='email' required></label>"
         f"<label>Пароль<input type='password' name='password' minlength='8' "
@@ -863,9 +940,9 @@ def navigation_items(role: str | None, path: str, tab: str = "overview", preview
     """Формирует рабочие вкладки с сохранением предпросмотра роли."""
     common = [("Главная", "/panel?tab=overview"), ("Профиль", "/panel?tab=profile"), ("Обратная связь", "/panel?tab=feedback")]
     options = {
-        "client": [common[0], ("Мои заявки", "/panel?tab=requests"), ("Тарифы", "/panel?tab=tariffs"), *common[1:]],
+        "client": [common[0], ("Мои заявки", "/panel?tab=requests"), ("Услуги и цены", "/panel?tab=tariffs"), ("Сертификаты", "/panel?tab=certificates"), *common[1:]],
         "master": [common[0], ("Очередь", "/panel?tab=requests"), ("В работе", "/panel?tab=requests&status=in_progress"), ("Архив", "/panel?tab=requests&status=closed"), *common[1:]],
-        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Тарифы", "/admin/tariffs"), ("Тексты", "/admin/texts"), common[1]],
+        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("Тарифы", "/admin/tariffs"), ("Тексты", "/admin/texts"), common[1]],
     }
     result = []
     for label, href in options.get(role or "", []):
@@ -884,9 +961,7 @@ def navigation_items(role: str | None, path: str, tab: str = "overview", preview
 
 def public_home(logged_in: bool = False) -> str:
     """Формирует главную страницу без вымышленных отзывов и цен."""
-    bot_url = "/bot"
-    if logged_in:
-        bot_url = "/panel"
+    bot_url = "/request/new"
     return templates.get_template("home.html").render(bot_url=bot_url)
 
 

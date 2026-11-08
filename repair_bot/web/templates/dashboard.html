@@ -42,7 +42,7 @@
     <section class="dashboard-panel"><div class="panel-title"><h2>Быстрые действия</h2></div><nav class="quick-links">
       {% if role == 'admin' %}<a href="/admin/users"><span>Пользователи и роли</span>→</a><a href="/admin/tariffs"><span>Изменить тарифы срочности</span>→</a><a href="/admin/texts"><span>Тексты кабинета</span>→</a>
       {% elif role == 'master' %}<a href="{{ list_url }}&status=in_progress"><span>Заявки в работе</span>→</a><a href="{{ list_url }}&status=closed"><span>Архив ремонтов</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Связаться с администратором</span>→</a>
-      {% else %}<a href="/panel?tab=tariffs{{ suffix }}"><span>Посмотреть доплаты за срочность</span>→</a><a href="/panel?tab=profile{{ suffix }}"><span>Мои контактные данные</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Задать вопрос</span>→</a>{% endif %}
+      {% else %}<a href="/panel?tab=tariffs{{ suffix }}"><span>Услуги и цены</span>→</a><a href="/panel?tab=profile{{ suffix }}"><span>Мои контактные данные</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Задать вопрос</span>→</a>{% endif %}
     </nav></section>
     <section class="dashboard-panel"><span class="eyebrow">{{ 'ВАЖНО ЗНАТЬ' if role == 'client' else 'РАБОЧИЙ ПОРЯДОК' }}</span><h2>{{ 'Как проходит ремонт' if role == 'client' else 'Работа с заявкой' }}</h2><ol class="dashboard-guide">
       {% if role == 'client' %}<li><strong>Опишите проблему</strong><p>Добавьте симптомы и выберите срочность.</p></li><li><strong>Дождитесь проверки</strong><p>AI-оценка предварительная; её уточняет специалист.</p></li><li><strong>Следите за статусом</strong><p>Изменения видны в кабинете и приходят в Telegram.</p></li>

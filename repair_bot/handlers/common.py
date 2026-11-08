@@ -12,6 +12,7 @@ from repair_bot.database.crud.requests import get_request_status_counts
 from repair_bot.database.crud.users import get_all_users
 from repair_bot.keyboards import main_menu_keyboard
 from repair_bot.keyboards.requests import format_surcharge
+from repair_bot.services.pricing.request_total import final_total, certificate_discount
 from repair_bot.database.models import RepairRequest
 
 logger = logging.getLogger("repair_bot.handlers")
@@ -131,12 +132,15 @@ def admin_request_text(request: RepairRequest) -> str:
         urgency_record = getattr(request, "urgency", None)
         surcharge = urgency_record.surcharge_kopecks if urgency_record else 0
         urgency_label = html.escape(urgency_record.label) if urgency_record else "Обычная"
+        discount = certificate_discount(request, current_edit.client_price_kopecks + surcharge)
+        discount_line = f"Скидка по сертификату: {format_rubles(discount)}\n" if discount else ""
         text += (
             "\n\n✅ <b>Последняя проверка сотрудника</b>\n"
             f"Диагноз: {html.escape(current_edit.diagnosis)}\n"
             f"Стоимость ремонта: {format_rubles(current_edit.client_price_kopecks)}\n"
             f"Срочность: {urgency_label} ({format_surcharge(surcharge)})\n"
-            f"Итого: {format_rubles(current_edit.client_price_kopecks + surcharge)}\n"
+            f"{discount_line}"
+            f"Итого: {format_rubles(final_total(request, current_edit.client_price_kopecks, surcharge))}\n"
             f"Исправил: {html.escape(current_edit.editor_name)}"
         )
     urgency_record = getattr(request, "urgency", None)
@@ -175,12 +179,15 @@ def client_request_text(request: RepairRequest) -> str:
     if staff_edits:
         current_edit = staff_edits[-1]
         repair_price = current_edit.client_price_kopecks
+        discount = certificate_discount(request, repair_price + surcharge)
+        discount_line = f"Скидка по сертификату: {format_rubles(discount)}\n" if discount else ""
         return (
             f"{text}\n\n✅ <b>Проверено специалистом</b>\n"
             f"Диагноз: {html.escape(current_edit.diagnosis)}\n"
             f"Стоимость ремонта: {format_rubles(repair_price)}\n"
             f"Доплата за срочность: {format_rubles(surcharge)}\n"
-            f"Итого предварительно: {format_rubles(repair_price + surcharge)}"
+            f"{discount_line}"
+            f"Итого предварительно: {format_rubles(final_total(request, repair_price, surcharge))}"
             f"{urgency_summary}\n"
             f"Специалист: {html.escape(current_edit.editor_name)}"
         )
@@ -188,7 +195,7 @@ def client_request_text(request: RepairRequest) -> str:
         return f"{text}{urgency_summary}"
     price = format_rubles(assessment.client_price_kopecks)
     total = (
-        format_rubles(assessment.client_price_kopecks + surcharge)
+        format_rubles(final_total(request, assessment.client_price_kopecks, surcharge))
         if assessment.client_price_kopecks is not None
         else "определит мастер после диагностики"
     )

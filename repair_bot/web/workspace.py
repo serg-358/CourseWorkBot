@@ -6,9 +6,26 @@ from urllib.parse import urlencode
 
 from repair_bot.database.models import RepairRequest, User, WebsiteAccount
 from repair_bot.handlers.common import format_rubles
+from repair_bot.services.pricing.catalog import CATALOG, calculate_cost
+from repair_bot.services.pricing.request_total import final_total
 
 STATUSES = {"new": "Новая", "in_progress": "В работе", "completed": "Завершена", "cancelled": "Отменена"}
 PRIORITIES = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
+
+
+def service_catalog() -> list[dict[str, str]]:
+    """Использует клиентские цены действующего расчётного каталога."""
+    descriptions = {
+        "diagnostics": "Проверка симптомов и определение причины неисправности. Мастер уточнит необходимый объём ремонта.",
+        "os_reinstall": "Переустановка операционной системы. Сохранение данных, лицензии и состав программ согласовываются отдельно.",
+        "cooling_service": "Чистка от пыли и обслуживание системы охлаждения. Необходимость дополнительных работ определяет мастер.",
+    }
+    rows = []
+    for code in ("diagnostics", "cooling_service", "os_reinstall", "ram_8gb", "ssd_500gb", "power_supply"):
+        item = CATALOG[code]
+        _items, _cost, price = calculate_cost([code])
+        rows.append({"code": code, "title": item.title, "description": descriptions.get(code, "Расчётный ориентир стоимости компонента. Совместимость, наличие и работы по установке уточняет мастер."), "price": format_rubles(price), "category": "Работы" if code in descriptions else "Компоненты"})
+    return rows
 
 
 def request_price(item: RepairRequest) -> int | None:
@@ -16,7 +33,7 @@ def request_price(item: RepairRequest) -> int | None:
     price = item.staff_edits[-1].client_price_kopecks if item.staff_edits else (
         item.ai_assessment.client_price_kopecks if item.ai_assessment else None
     )
-    return price + (item.urgency.surcharge_kopecks if item.urgency else 0) if price is not None else None
+    return final_total(item, price, item.urgency.surcharge_kopecks if item.urgency else 0) if price is not None else None
 
 
 def sorted_requests(items: list[RepairRequest], params: dict[str, str]) -> list[RepairRequest]:

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from repair_bot.database.models.base import Base, utcnow
 
 if TYPE_CHECKING:
+    from repair_bot.database.models.gift_certificate import GiftCertificate
     from repair_bot.database.models.ai_assessment import RepairRequestAiAssessment
     from repair_bot.database.models.repair_request_staff_edit import RepairRequestStaffEdit
     from repair_bot.database.models.request_urgency import RequestUrgency
@@ -45,4 +46,8 @@ class RepairRequest(Base):
     )
     urgency: Mapped["RequestUrgency | None"] = relationship(
         back_populates="request", cascade="all, delete-orphan", uselist=False
+    )
+    certificate_discount: Mapped["GiftCertificate | None"] = relationship(
+        foreign_keys="GiftCertificate.target_request_id", uselist=False,
+        lazy="selectin", viewonly=True,
     )
