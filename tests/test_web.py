@@ -173,6 +173,15 @@ async def test_admin_can_assign_roles_but_bootstrap_role_is_protected(
         )
         admin_page = await client.get("/admin/users")
         assert admin_page.status_code == 200
+        admin_only = await client.get("/admin/users?role=admin")
+        assert "+79990000001" in admin_only.text
+        assert "+79990000002" not in admin_only.text
+        client_only = await client.get("/admin/users?role=client")
+        assert "+79990000002" in client_only.text
+        assert "+79990000001" not in client_only.text
+        role_summary = await client.get("/panel")
+        for label in ("Администраторы", "Мастера", "Клиенты"):
+            assert label in role_summary.text
         csrf = re.search(r"name='csrf' value='([^']+)'", admin_page.text).group(1)
         protected = await client.post(
             f"/admin/users/{admin_user_id}/role",

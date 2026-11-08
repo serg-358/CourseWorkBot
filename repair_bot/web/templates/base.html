@@ -29,6 +29,14 @@
         {% endif %}
       </nav>
       <div class="header-account">
+        {% if bot_available %}
+        <details class="telegram-menu">
+          <summary class="telegram-toggle" aria-label="Telegram: открыть бота или QR-код" title="Telegram-бот">
+            <svg width="21" height="21" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="m21 3-4 18-6-5-4 3 1-7L21 3ZM8 12l9-6-6 10M3 9l18-6-13 9-5-3Z"/></svg>
+          </summary>
+          <div class="telegram-dropdown"><strong>ПК Доктор в Telegram</strong><p>Выберите удобный способ перехода</p><a class="button primary" href="/bot" target="_blank" rel="noopener">Открыть бота ↗</a><details class="telegram-qr"><summary>Показать QR-код</summary><img src="/bot-qr.png" width="180" height="180" loading="lazy" alt="QR-код Telegram-бота"><p>Наведите камеру телефона</p></details></div>
+        </details>
+        {% endif %}
         <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Переключить тему">◐</button>
         {% if logged_in %}
           {% if account_name %}<span class="account-name">{{ account_name }}</span>{% endif %}
@@ -40,7 +48,6 @@
   <main class="page-shell{% if not logged_in %} public-shell{% endif %}">
     {% if is_admin %}<nav class="preview-roles" aria-label="Просмотр интерфейсов"><span>Посмотреть интерфейс:</span><a href="/panel">Администратор</a><a href="/panel?view=client">Клиент</a><a href="/panel?view=master">Мастер</a></nav>{% endif %}
     {{ content|safe }}
-    {% if bot_available %}<aside class="bot-connect"><div><span class="eyebrow">МЫ В TELEGRAM</span><h2>Бот всегда под рукой</h2><p>Создайте заявку и получайте уведомления о ремонте.</p><a class="button primary" href="/bot" target="_blank" rel="noopener">Перейти в Telegram-бота ↗</a></div><img src="/bot-qr.png" width="160" height="160" alt="QR-код для перехода в Telegram-бота"></aside>{% endif %}
   </main>
   <footer class="site-footer"><div class="footer-inner"><span>ПК ДОКТОР</span><span>Заявки на ремонт и связь с мастером — в одном месте.</span></div></footer>
   <script>
@@ -51,6 +58,16 @@
       toggle?.addEventListener("click", () => {
         root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
         try { localStorage.setItem("pcdoctor-theme", root.dataset.theme); } catch (_) {}
+      });
+      const telegram = document.querySelector('.telegram-menu');
+      document.addEventListener('click', (event) => {
+        if (telegram && !telegram.contains(event.target)) telegram.open = false;
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && telegram?.open) {
+          telegram.open = false;
+          telegram.querySelector('summary').focus();
+        }
       });
     })();
   </script>

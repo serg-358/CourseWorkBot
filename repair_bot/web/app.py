@@ -372,6 +372,9 @@ def create_app() -> FastAPI:
             if account is None or actor is None or actor.role != "admin":
                 return forbidden_page(request)
             users = await get_all_users(db)
+            selected_role = request.query_params.get("role", "")
+            if selected_role in ROLE_NAMES:
+                users = [item for item in users if item.role == selected_role]
         csrf = csrf_token(request)
         rows = []
         for item in users:
@@ -388,6 +391,7 @@ def create_app() -> FastAPI:
             )
         content = (
             "<section class='card'><h2>Пользователи и роли</h2><p>Роль хранится на сервере и проверяется при каждом запросе.</p>"
+            "<nav class='user-role-tabs' aria-label='Категории пользователей'><a href='/admin/users'>Все</a><a href='/admin/users?role=admin'>Администраторы</a><a href='/admin/users?role=master'>Мастера</a><a href='/admin/users?role=client'>Клиенты</a></nav>"
             "<div class='table-wrap'><table><thead><tr><th>Имя</th><th>Телефон</th><th>Telegram ID</th><th>Роль</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div></section>"
         )
@@ -753,11 +757,15 @@ async def admin_panel(request: Request, user: User, db: AsyncSession) -> str:
     """Рендерит сводку и ссылки на инструменты администратора."""
     users = await get_all_users(db)
     requests = await get_all_requests(db)
+    role_cards = "".join(
+        f"<a href='/admin/users?role={role}'><div><b>{sum(item.role == role for item in users)}</b><span>{label}</span></div></a>"
+        for role, label in (("admin", "Администраторы"), ("master", "Мастера"), ("client", "Клиенты"))
+    )
     return (
         f"<section class='hero'><h1>Панель администратора</h1>"
         f"<p>Здравствуйте, {html.escape(user.full_name)}.</p>"
-        f"<div class='stats'><div><b>{len(users)}</b><span>Пользователей</span></div>"
-        f"<div><b>{len(requests)}</b><span>Заявок</span></div></div></section>"
+        f"<div class='stats'>{role_cards}"
+        f"<a href='/admin/requests'><div><b>{len(requests)}</b><span>Заявки</span></div></a></div></section>"
         "<nav class='grid-nav'><a href='/admin/users'>Пользователи и роли</a>"
         "<a href='/admin/requests'>Все заявки и цены</a>"
         "<a href='/admin/tariffs'>Тарифы срочности</a><a href='/admin/texts'>Тексты сайта</a></nav>"
