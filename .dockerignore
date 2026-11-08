@@ -1,4 +1,9 @@
 .env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+tmp/
 .venv/
 .vs/
 __pycache__/

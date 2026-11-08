@@ -15,6 +15,8 @@ from urllib.parse import parse_qs
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +71,8 @@ SITE_TEXT_DEFAULTS = {
     "client_welcome": "Отслеживайте ремонт и создавайте новые заявки в личном кабинете.",
     "service_note": "Выезд по адресу выполняется по согласованию с мастером.",
 }
+WEB_DIRECTORY = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
 
 
 def create_app() -> FastAPI:
@@ -76,7 +80,10 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if os.getenv("ENVIRONMENT") == "production" and len(SESSION_SECRET) < 32:
+        if os.getenv("ENVIRONMENT") == "production" and (
+            len(SESSION_SECRET) < 32
+            or SESSION_SECRET == "local-development-secret-change-before-deploy"
+        ):
             raise RuntimeError("Для сайта задайте отдельный WEB_SESSION_SECRET.")
         await create_tables()
         yield
@@ -95,6 +102,11 @@ def create_app() -> FastAPI:
         same_site="lax",
         https_only=COOKIE_SECURE,
     )
+    app.mount(
+        "/static",
+        StaticFiles(directory=WEB_DIRECTORY / "static"),
+        name="static",
+    )
 
     @app.get("/health", response_class=Response)
     async def health() -> Response:
@@ -102,10 +114,16 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request) -> Response:
-        return RedirectResponse("/panel" if request.session.get("account_id") else "/login")
+        async with SessionLocal() as db:
+            account, _user = await identity(request, db)
+        return render_page(request, "Ремонт компьютеров", public_home(account is not None))
 
     @app.get("/register", response_class=HTMLResponse)
-    async def register_page(request: Request) -> HTMLResponse:
+    async def register_page(request: Request) -> Response:
+        async with SessionLocal() as db:
+            account, _user = await identity(request, db)
+        if account is not None:
+            return RedirectResponse("/panel", status_code=303)
         return render_page(request, "Регистрация", auth_form(request, "register"))
 
     @app.post("/register")
@@ -117,8 +135,8 @@ def create_app() -> FastAPI:
         password = form.get("password", "")
         if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or len(email) > 254:
             return error_page(request, "Введите корректный адрес электронной почты.", "/register")
-        if len(password) < 12 or len(password) > 128:
-            return error_page(request, "Пароль должен содержать от 12 до 128 символов.", "/register")
+        if len(password) < 8:
+            return error_page(request, "Пароль должен содержать минимум 8 символов.", "/register")
         if password != form.get("password_repeat", ""):
             return error_page(request, "Введённые пароли не совпадают.", "/register")
         async with SessionLocal() as db:
@@ -137,7 +155,11 @@ def create_app() -> FastAPI:
         return RedirectResponse("/panel", status_code=303)
 
     @app.get("/login", response_class=HTMLResponse)
-    async def login_page(request: Request) -> HTMLResponse:
+    async def login_page(request: Request) -> Response:
+        async with SessionLocal() as db:
+            account, _user = await identity(request, db)
+        if account is not None:
+            return RedirectResponse("/panel", status_code=303)
         return render_page(request, "Вход", auth_form(request, "login"))
 
     @app.post("/login")
@@ -530,6 +552,8 @@ async def identity(
         request.session.clear()
         return None, None
     user = await db.get(User, account.user_id) if account.user_id is not None else None
+    request.state.current_role = user.role if user is not None else "client"
+    request.state.current_name = user.full_name if user is not None else account.email
     return account, user
 
 
@@ -699,7 +723,7 @@ def auth_form(request: Request, mode: str) -> str:
         + f"</h1><form method='post' action='/{mode}'>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         "<label>Email<input type='email' name='email' maxlength='254' autocomplete='email' required></label>"
-        f"<label>Пароль<input type='password' name='password' minlength='12' maxlength='128' "
+        f"<label>Пароль<input type='password' name='password' minlength='8' "
         f"autocomplete='{'new-password' if is_register else 'current-password'}' required></label>"
         f"{fields}<button>{'Зарегистрироваться' if is_register else 'Войти'}</button></form>"
         f"<p>{'Уже есть аккаунт?' if is_register else 'Нет аккаунта?'} "
@@ -708,7 +732,7 @@ def auth_form(request: Request, mode: str) -> str:
 
 
 def render_page(request: Request, title: str, content: str) -> HTMLResponse:
-    """Оборачивает экран в адаптивный HTML-шаблон."""
+    """Рендерит страницу через общий Jinja-шаблон кабинета."""
     logged_in = isinstance(request.session.get("account_id"), int)
     csrf = csrf_token(request)
     logout = (
@@ -717,16 +741,51 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
         if logged_in
         else ""
     )
-    page = f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)} · ПК Доктор</title>
-<style>
-:root{{color-scheme:dark;--bg:#101411;--panel:#1a211c;--line:#303c33;--green:#86cf91;--text:#f2f5f1;--muted:#a7b2a8}}
-*{{box-sizing:border-box}}body{{margin:0;background:radial-gradient(ellipse at top,#24392a,var(--bg) 55%);color:var(--text);font:16px/1.5 system-ui,Segoe UI,sans-serif}}
-a{{color:var(--green)}}header{{height:68px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 max(20px,calc((100vw - 1120px)/2))}}
-.brand{{font-weight:800;color:var(--text);text-decoration:none;font-size:20px}}main{{max-width:1120px;margin:34px auto;padding:0 20px 60px}}h1{{font-size:clamp(28px,4vw,42px);margin:0 0 12px}}h2{{margin:0 0 14px}}.hero,.card,.request-card,.auth-card{{background:linear-gradient(140deg,#1b251e,#151a16);border:1px solid var(--line);border-radius:18px;padding:24px;margin:0 0 18px;box-shadow:0 12px 35px #0003}}
-.hero{{border-color:#405c45}}.muted{{color:var(--muted)}}label{{display:block;margin:14px 0;color:var(--muted)}}input,textarea,select{{display:block;width:100%;margin-top:6px;background:#101511;border:1px solid #3a493d;border-radius:10px;padding:12px;color:var(--text);font:inherit}}textarea{{min-height:100px;resize:vertical}}button,.button{{display:inline-block;border:0;border-radius:10px;padding:11px 17px;background:var(--green);color:#102013;font:700 15px system-ui;text-decoration:none;cursor:pointer}}button:hover,.button:hover{{filter:brightness(1.08)}}.logout{{background:#303b32;color:var(--text);padding:8px 12px}}.auth-card{{max-width:460px;margin:8vh auto}}.stats{{display:flex;gap:16px;margin-top:20px}}.stats div{{background:#111813;padding:15px 20px;border-radius:12px;min-width:140px}}.stats b,.stats span{{display:block}}.stats b{{font-size:28px;color:var(--green)}}.grid-nav{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}}.grid-nav a{{padding:20px;border:1px solid var(--line);background:var(--panel);border-radius:14px;text-decoration:none;font-weight:700}}.request-card form,.tariff{{margin-top:18px;padding-top:15px;border-top:1px solid var(--line)}}.tariff{{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}}.table-wrap{{overflow:auto}}table{{width:100%;border-collapse:collapse}}td,th{{padding:12px;text-align:left;border-bottom:1px solid var(--line)}}td form{{display:flex;gap:8px;min-width:280px}}pre{{padding:14px;background:#0c100d;border-radius:8px;overflow:auto}}@media(max-width:640px){{main{{margin-top:18px}}.hero,.card,.request-card{{padding:18px}}.tariff{{grid-template-columns:1fr}}}}
-</style></head><body><header><a class="brand" href="/panel">🖥 ПК Доктор</a>{logout}</header><main>{content}</main></body></html>"""
-    return HTMLResponse(page)
+    role = getattr(request.state, "current_role", None)
+    nav_items = navigation_items(role, request.url.path) if logged_in else []
+    if logged_in and not nav_items:
+        nav_items = [{"label": "Личный кабинет", "href": "/panel", "active": False}]
+    return templates.TemplateResponse(
+        request=request,
+        name="base.html",
+        context={
+            "title": title,
+            "content": content,
+            "logged_in": logged_in,
+            "logout": logout,
+            "nav_items": nav_items,
+            "account_name": getattr(request.state, "current_name", ""),
+        },
+    )
+
+
+def navigation_items(role: str | None, path: str) -> list[dict[str, str | bool]]:
+    """Готовит пункты верхнего меню по действительной роли аккаунта."""
+    options = {
+        "client": [("Мои заявки", "/panel"), ("На сайт", "/")],
+        "master": [("Очередь заявок", "/panel"), ("На сайт", "/")],
+        "admin": [
+            ("Сводка", "/panel"),
+            ("Заявки", "/admin/requests"),
+            ("Пользователи", "/admin/users"),
+            ("Тарифы", "/admin/tariffs"),
+            ("Тексты", "/admin/texts"),
+            ("На сайт", "/"),
+        ],
+    }
+    return [
+        {"label": label, "href": href, "active": path == href}
+        for label, href in options.get(role or "", [])
+    ]
+
+
+def public_home(logged_in: bool = False) -> str:
+    """Формирует главную страницу без вымышленных отзывов и цен."""
+    bot_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "/register"
+    if logged_in:
+        bot_url = "/panel"
+    return templates.get_template("home.html").render(bot_url=bot_url)
+
 
 
 def error_page(request: Request, message: str, back: str) -> HTMLResponse:

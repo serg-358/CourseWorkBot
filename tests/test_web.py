@@ -43,6 +43,15 @@ async def test_website_register_link_telegram_and_enforce_role_access(
         )
         assert response.status_code == 303
 
+        # Вход сохраняется при переходе на главную и страницы авторизации.
+        signed_in_home = await client.get("/")
+        assert "client@example.test" in signed_in_home.text
+        assert 'href="/register"' not in signed_in_home.text
+        for auth_path in ("/login", "/register"):
+            auth_response = await client.get(auth_path, follow_redirects=False)
+            assert auth_response.status_code == 303
+            assert auth_response.headers["location"] == "/panel"
+
         unlinked_page = await client.get("/panel")
         assert "Свяжите аккаунт с Telegram" in unlinked_page.text
         csrf = re.search(r"name='csrf' value='([^']+)'", unlinked_page.text).group(1)

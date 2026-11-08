@@ -227,6 +227,7 @@ bot_database.db
 *.db
 *.sqlite
 *.sqlite3
+tmp/pdfs/
 logs/
 .pytest_cache/
 .pre-commit-cache/

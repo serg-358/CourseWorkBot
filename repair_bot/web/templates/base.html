@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0f14">
+  <title>{{ title }} · ПК Доктор</title>
+  <link rel="stylesheet" href="/static/site.css">
+  <script src="/static/slideshow.js?v=2" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/" aria-label="ПК Доктор — главная">
+        <span class="brand-mark">&gt;</span><span>ПК ДОКТОР</span>
+      </a>
+      <nav class="main-nav" aria-label="Основная навигация">
+        {% if logged_in %}
+          {% for item in nav_items %}
+            <a class="nav-link{% if item.active %} active{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
+          {% endfor %}
+        {% else %}
+          <a class="nav-link" href="/#services">Услуги</a>
+          <a class="nav-link" href="/#reviews">Отзывы</a>
+          <a class="nav-link" href="/#process">Как проходит ремонт</a>
+          <a class="nav-link" href="/#questions">Вопросы</a>
+          <a class="nav-link" href="/login">Войти</a>
+          <a class="button secondary nav-cta" href="/register">Создать кабинет</a>
+        {% endif %}
+      </nav>
+      <div class="header-account">
+        <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Переключить тему">◐</button>
+        {% if logged_in %}
+          {% if account_name %}<span class="account-name">{{ account_name }}</span>{% endif %}
+          {{ logout|safe }}
+        {% endif %}
+      </div>
+    </div>
+  </header>
+  <main class="page-shell{% if not logged_in %} public-shell{% endif %}">
+    {{ content|safe }}
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>ПК ДОКТОР</span><span>Заявки на ремонт и связь с мастером — в одном месте.</span></div></footer>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const toggle = document.getElementById("theme-toggle");
+      try { if (localStorage.getItem("pcdoctor-theme") === "light") root.dataset.theme = "light"; } catch (_) {}
+      toggle?.addEventListener("click", () => {
+        root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+        try { localStorage.setItem("pcdoctor-theme", root.dataset.theme); } catch (_) {}
+      });
+    })();
+  </script>
+</body>
+</html>
