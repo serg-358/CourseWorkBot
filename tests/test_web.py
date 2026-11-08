@@ -315,3 +315,52 @@ async def test_request_details_photos_and_previews_are_authorized(db_session_fac
         qr = await client.get('/bot-qr.png')
         assert qr.status_code == 200
         assert qr.content.startswith(b'\x89PNG')
+
+@pytest.mark.parametrize('field,order,expected', [('id','asc',[1,2,3]),('id','desc',[3,2,1]),('date','asc',[3,1,2]),('status','asc',[2,1,3]),('price','asc',[2,1,3]),('price','desc',[1,2,3])])
+def test_workspace_sorts_prices_dates_ids_and_statuses(field, order, expected):
+    from datetime import datetime
+    from types import SimpleNamespace as Item
+    from repair_bot.web.workspace import sorted_requests, request_price
+    def item(number, day, status, price, edits=None):
+        return Item(id=number, created_at=datetime(2026,11,day), status=status, staff_edits=edits or [], ai_assessment=Item(client_price_kopecks=price), urgency=Item(surcharge_kopecks=50000))
+    items = [item(1,2,'in_progress',100000,[Item(client_price_kopecks=300000)]),item(2,3,'new',100000),item(3,1,'completed',None)]
+    assert request_price(items[0]) == 350000
+    assert [row.id for row in sorted_requests(items, {'sort':field,'order':order})] == expected
+    assert [row.id for row in sorted_requests(items, {'status':'new'})] == [2]
+    assert [row.id for row in sorted_requests(items, {'from':'2026-11-02','to':'2026-11-02'})] == [1]
+    assert [row.id for row in sorted_requests(items, {'status':'closed'})] == [3]
+
+
+@pytest.mark.asyncio
+async def test_workspace_tabs_and_feedback_delivery(db_session_factory, monkeypatch):
+    monkeypatch.setattr(web_app,'SessionLocal',db_session_factory)
+    delivery = AsyncMock(return_value=True)
+    monkeypatch.setattr(web_app,'deliver_feedback',delivery)
+    async with db_session_factory() as db:
+        user = User(telegram_id='93001', full_name='Client workspace', phone='+79990000001', role='client')
+        admin = User(telegram_id='93002', full_name='Admin workspace', phone='+79990000002', role='admin')
+        db.add_all([user,admin])
+        await db.flush()
+        db.add(WebsiteAccount(user_id=user.id,email='workspace@example.test',password_hash=web_app.hash_password('test-pass-123')))
+        await db.commit()
+    async with AsyncClient(transport=ASGITransport(app=web_app.app),base_url='http://testserver') as client:
+        page=await client.get('/login')
+        csrf=re.search(r"name='csrf' value='([^']+)'",page.text).group(1)
+        await client.post('/login',data={'csrf':csrf,'email':'workspace@example.test','password':'test-pass-123'})
+        overview=await client.get('/panel?tab=overview')
+        assert 'Здравствуйте, Client workspace!' in overview.text
+        assert 'На сайт' not in overview.text
+        assert 'Обратная связь' in overview.text
+        assert 'workspace@example.test' in (await client.get('/panel?tab=profile')).text
+        assert 'Тарифы срочности' in (await client.get('/panel?tab=tariffs')).text
+        page=await client.get('/panel?tab=feedback')
+        csrf=re.search(r"name='csrf' value='([^']+)'",page.text).group(1)
+        await client.post('/feedback',data={'message':'Message without csrf'})
+        delivery.assert_not_awaited()
+        delivered=await client.post('/feedback',data={'csrf':csrf,'message':'Please help with my repair request.'})
+        assert 'Сообщение отправлено' in delivered.text
+        assert delivery.await_args.args[0] == ['93002']
+        assert 'workspace@example.test' in delivery.await_args.args[1]
+        repeated=await client.post('/feedback',data={'csrf':csrf,'message':'Please help with my repair request.'})
+        assert 'Подождите минуту' in repeated.text
+        assert delivery.await_count == 1

@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -62,6 +63,8 @@ from repair_bot.handlers.common import (
 from repair_bot.handlers.staff_requests import parse_client_price
 from repair_bot.services.ai.diagnostics import analyze_repair_request
 from repair_bot.services.pricing.catalog import calculate_cost
+
+from repair_bot.web.workspace import requests_table, profile_content, feedback_content
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +196,23 @@ def create_app() -> FastAPI:
             account, user = await identity(request, db)
             if account is None:
                 return RedirectResponse("/login", status_code=303)
-            if user is None:
+            tab = request.query_params.get("tab", "requests")
+            if tab == "profile":
+                content = profile_content(account, user)
+            elif tab == "feedback":
+                content = feedback_content(csrf_token(request))
+            elif tab == "tariffs":
+                tariffs = await get_urgency_tariffs(db)
+                content = "<h1>Тарифы срочности</h1><p>Доплата за срочность добавляется отдельно к стоимости ремонта.</p><div class='grid-nav'>" + "".join(f"<article class='card'><h2>{html.escape(t.label)}</h2><p>{format_rubles(t.surcharge_kopecks)}</p></article>" for t in tariffs) + "</div>"
+            elif tab == "overview" and user is not None and effective_view(request, user) != "admin":
+                role = effective_view(request, user)
+                items = await get_user_requests(db, user.id) if role == "client" else await get_all_requests(db)
+                suffix = f"&view={role}" if user.role == "admin" else ""
+                counts = {key: sum(item.status == key for item in items) for key in ("new", "in_progress", "completed")}
+                content = f"<section class='hero'><span class='eyebrow'>{'КАБИНЕТ КЛИЕНТА' if role == 'client' else 'РАБОЧЕЕ МЕСТО МАСТЕРА'}</span><h1>Здравствуйте, {html.escape(user.full_name)}!</h1><p>{'Ваши обращения и ход ремонта в одном месте.' if role == 'client' else 'Откройте очередь, проверьте диагноз и обновите статус ремонта.'}</p></section>"
+                content += "<div class='workspace-stats'>" + "".join(f"<a class='card' href='/panel?tab=requests&status={key}{suffix}'><span>{label}</span><strong>{counts[key]}</strong></a>" for key,label in [("new","Новые"),("in_progress","В работе"),("completed","Завершены")]) + "</div>"
+                content += f"<div class='actions'><a class='button primary' href='/panel?tab=requests{suffix}'>Открыть заявки →</a><a class='button secondary' href='/panel?tab=feedback{suffix}'>Обратная связь</a></div>"
+            elif user is None:
                 content = await unlinked_panel(request, account, db)
             elif effective_view(request, user) == "client":
                 content = await client_panel(request, account, user, db)
@@ -381,7 +400,7 @@ def create_app() -> FastAPI:
             if account is None or actor is None or actor.role != "admin":
                 return forbidden_page(request)
             requests = await get_all_requests(db)
-        return render_page(request, "Все заявки", "<h1>Все заявки</h1>" + requests_table(requests, staff=True))
+        return render_page(request, "Все заявки", "<h1>Все заявки</h1>" + requests_table(requests, staff=True, params=dict(request.query_params), path="/admin/requests"))
 
     @app.post("/admin/tariffs/{code}")
     async def admin_update_tariff(request: Request, code: str) -> Response:
@@ -484,6 +503,30 @@ def create_app() -> FastAPI:
         output = BytesIO()
         qrcode.make("https://pc-doctor.duckdns.org/bot").save(output, format="PNG")
         return Response(output.getvalue(), media_type="image/png")
+
+    @app.post("/feedback")
+    async def submit_feedback(request: Request) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return error_page(request, "Сессия формы устарела. Обновите страницу.", "/panel?tab=feedback")
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None:
+                return forbidden_page(request)
+            message = form.get("message", "").strip()
+            if not 10 <= len(message) <= 3000:
+                return error_page(request, "Сообщение должно содержать от 10 до 3000 символов.", "/panel?tab=feedback")
+            now = time.time()
+            if now - request.session.get("feedback_sent_at", 0) < 60:
+                return error_page(request, "Подождите минуту перед следующим сообщением.", "/panel?tab=feedback")
+            recipients = [item.telegram_id for item in await users_by_role(db, "admin")]
+            sender = f"{user.full_name if user else 'Пользователь сайта'}\nEmail: {account.email}"
+            if user:
+                sender += f"\nTelegram ID: {user.telegram_id}"
+        if not await deliver_feedback(recipients, f"Обратная связь с сайта\n{sender}\n\n{message}"):
+            return error_page(request, "Сообщение не доставлено. Попробуйте позже.", "/panel?tab=feedback")
+        request.session["feedback_sent_at"] = now
+        return render_page(request, "Сообщение отправлено", "<section class='card'><h1>Сообщение отправлено</h1><p>Администраторы получили ваше обращение. Для ответа указаны данные вашего профиля.</p><a class='button secondary' href='/panel?tab=feedback'>Вернуться</a></section>")
 
     @app.get("/requests/{request_id}")
     async def request_detail(request: Request, request_id: int) -> Response:
@@ -592,23 +635,21 @@ async def download_request_photo(file_id: str) -> bytes:
         return output.getvalue()
 
 
-def requests_table(items: list[RepairRequest], staff: bool = False, view: str = "") -> str:
-    """Строит список с отдельной ссылкой на каждую заявку."""
-    statuses = {"new": "Новая", "in_progress": "В работе", "completed": "Завершена", "cancelled": "Отменена"}
-    priorities = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
-    rows = []
-    for item in items:
-        url = f"/requests/{item.id}" + (f"?view={view}" if view else "")
-        owner = f"<td>{html.escape(item.user.full_name)}</td>" if staff else ""
-        rows.append(
-            f"<tr><td><a href='{url}'>№{item.id}</a></td>{owner}"
-            f"<td><a href='{url}'>{html.escape(item.description[:100])}</a></td>"
-            f"<td>{statuses.get(item.status, 'Неизвестен')}</td><td>{priorities.get(item.priority, 'Средний')}</td>"
-            f"<td>{item.created_at:%d.%m.%Y}</td><td><a href='{url}'>Открыть →</a></td></tr>"
-        )
-    headings = "<th>Клиент</th>" if staff else ""
-    empty = "<p class='card'>Заявок пока нет.</p>"
-    return (f"<div class='table-wrap'><table><thead><tr><th>Номер</th>{headings}<th>Описание</th><th>Статус</th><th>Приоритет</th><th>Создана</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>" if rows else empty)
+async def deliver_feedback(recipients: list[str], text: str) -> bool:
+    """Доставляет явно отправленное пользователем сообщение администраторам."""
+    if not recipients or not os.getenv("BOT_TOKEN"):
+        return False
+    delivered = False
+    async with Bot(os.environ["BOT_TOKEN"]) as bot:
+        for recipient in set(recipients):
+            try:
+                await bot.send_message(recipient, text)
+                delivered = True
+            except TelegramAPIError:
+                logger.info("Не удалось доставить обратную связь одному из администраторов.")
+    return delivered
+
+
 
 
 async def identity(
@@ -691,9 +732,9 @@ async def client_panel(
         f"<section class='hero'><h1>Кабинет клиента</h1><p>Здравствуйте, {html.escape(user.full_name)}.</p>"
         f"<p>Телефон: {html.escape(user.phone)}</p>"
         f"<p>{html.escape(texts['client_welcome'])}</p>{bot_link}</section>"
-        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else create_form)
+        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else "<details class='create-request-panel'><summary>＋ Создать заявку</summary>" + create_form + "</details>")
         + "<section><h2>Ваши заявки</h2>"
-        + requests_table(requests, view="client" if user.role == "admin" else "")
+        + requests_table(requests, view="client" if user.role == "admin" else "", params=dict(request.query_params))
         + "</section>"
     )
 
@@ -704,7 +745,7 @@ async def master_panel(request: Request, user: User, db: AsyncSession) -> str:
     return (
         f"<section class='hero'><h1>Панель мастера</h1><p>Здравствуйте, {html.escape(user.full_name)}. "
         f"Заявок в очереди: {len(requests)}.</p></section>"
-        + requests_table(requests, staff=True, view="master" if user.role == "admin" else "")
+        + requests_table(requests, staff=True, view="master" if user.role == "admin" else "", params=dict(request.query_params))
     )
 
 
@@ -789,7 +830,7 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
     actual_role = role
     if role == "admin" and request.query_params.get("view") in {"client", "master"}:
         role = request.query_params["view"]
-    nav_items = navigation_items(role, request.url.path) if logged_in else []
+    nav_items = navigation_items(role, request.url.path, request.query_params.get("tab", "requests"), request.query_params.get("view", "") if actual_role == "admin" else "", request.query_params.get("status", "")) if logged_in else []
     if logged_in and not nav_items:
         nav_items = [{"label": "Личный кабинет", "href": "/panel", "active": False}]
     return templates.TemplateResponse(
@@ -808,24 +849,27 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
     )
 
 
-def navigation_items(role: str | None, path: str) -> list[dict[str, str | bool]]:
-    """Готовит пункты верхнего меню по действительной роли аккаунта."""
+def navigation_items(role: str | None, path: str, tab: str = "requests", preview: str = "", status: str = "") -> list[dict[str, str | bool]]:
+    """Формирует рабочие вкладки с сохранением предпросмотра роли."""
+    common = [("Главная", "/panel?tab=overview"), ("Профиль", "/panel?tab=profile"), ("Обратная связь", "/panel?tab=feedback")]
     options = {
-        "client": [("Мои заявки", "/panel"), ("На сайт", "/")],
-        "master": [("Очередь заявок", "/panel"), ("На сайт", "/")],
-        "admin": [
-            ("Сводка", "/panel"),
-            ("Заявки", "/admin/requests"),
-            ("Пользователи", "/admin/users"),
-            ("Тарифы", "/admin/tariffs"),
-            ("Тексты", "/admin/texts"),
-            ("На сайт", "/"),
-        ],
+        "client": [common[0], ("Мои заявки", "/panel?tab=requests"), ("Тарифы", "/panel?tab=tariffs"), *common[1:]],
+        "master": [common[0], ("Очередь", "/panel?tab=requests"), ("В работе", "/panel?tab=requests&status=in_progress"), ("Архив", "/panel?tab=requests&status=closed"), *common[1:]],
+        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Тарифы", "/admin/tariffs"), ("Тексты", "/admin/texts"), common[1]],
     }
-    return [
-        {"label": label, "href": href, "active": path == href}
-        for label, href in options.get(role or "", [])
-    ]
+    result = []
+    for label, href in options.get(role or "", []):
+        if "?tab=" in href:
+            active = path == "/panel" and f"tab={tab}" in href
+            if tab == "requests":
+                expected_status = "in_progress" if label == "В работе" else "closed" if label == "Архив" else ""
+                active = active and status == expected_status
+        else:
+            active = path == href
+        if preview in {"client", "master"}:
+            href += ("&" if "?" in href else "?") + "view=" + preview
+        result.append({"label":label, "href":href, "active":active})
+    return result
 
 
 def public_home(logged_in: bool = False) -> str:
