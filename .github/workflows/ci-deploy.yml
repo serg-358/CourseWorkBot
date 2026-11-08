@@ -1,0 +1,51 @@
+name: Проверка и развёртывание
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Ruff и pytest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Установить зависимости
+        run: python -m pip install -r requirements-dev.txt
+      - name: Проверить Ruff
+        run: python -m ruff check .
+      - name: Запустить тесты
+        run: python -m pytest -q
+      - name: Проверить сборку контейнера
+        run: docker build --tag courseworkbot:ci .
+
+  deploy:
+    name: Развёртывание VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Настроить SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' '31.76.20.98 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAKzPNM3UpbVgP4fiB9rPSI2qtBU2EA+xpsP9OO4WxbU' >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Обновить приложение на VPS
+        run: ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes courseworkbot-deploy@31.76.20.98 "deploy $GITHUB_SHA"
