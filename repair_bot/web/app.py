@@ -1,5 +1,8 @@
 """Веб-кабинет с отдельным доступом для каждой роли."""
 
+from io import BytesIO
+
+import qrcode
 import hashlib
 import html
 import hmac
@@ -192,9 +195,9 @@ def create_app() -> FastAPI:
                 return RedirectResponse("/login", status_code=303)
             if user is None:
                 content = await unlinked_panel(request, account, db)
-            elif user.role == "client":
+            elif effective_view(request, user) == "client":
                 content = await client_panel(request, account, user, db)
-            elif user.role == "master":
+            elif effective_view(request, user) == "master":
                 content = await master_panel(request, user, db)
             elif user.role == "admin":
                 content = await admin_panel(request, user, db)
@@ -228,7 +231,7 @@ def create_app() -> FastAPI:
                 hashlib.sha256(code.encode()).hexdigest(),
                 utcnow() + LINK_TTL,
             )
-        bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
+        bot_link = "/bot"
         link_content = (
             "<section class='card'><h2>Привязка Telegram</h2>"
             "<p>Откройте бота, завершите регистрацию, затем отправьте команду:</p>"
@@ -378,35 +381,7 @@ def create_app() -> FastAPI:
             if account is None or actor is None or actor.role != "admin":
                 return forbidden_page(request)
             requests = await get_all_requests(db)
-            address_result = await db.execute(
-                select(RequestAddress).where(
-                    RequestAddress.request_id.in_([item.id for item in requests])
-                )
-            )
-            addresses = {
-                item.request_id: item for item in address_result.scalars().all()
-            }
-        cards = []
-        for item in requests:
-            address = addresses.get(item.id)
-            address_text = (
-                f"<p><b>Адрес выезда:</b> {html.escape(address.address)}</p>"
-                if address
-                else ""
-            )
-            cards.append(
-                f"<article class='request-card'><h2>Заявка №{item.id} · "
-                f"{html.escape(item.user.full_name)} · {html.escape(item.status)}</h2>"
-                f"{admin_request_text(item).replace(chr(10), '<br>')}{address_text}"
-                f"{staff_request_form(item, csrf_token(request))}</article>"
-            )
-        return render_page(
-            request,
-            "Все заявки",
-            "<section><h1>База заявок</h1>"
-            + ("".join(cards) or "<article class='card muted'>Заявок пока нет.</article>")
-            + "</section>",
-        )
+        return render_page(request, "Все заявки", "<h1>Все заявки</h1>" + requests_table(requests, staff=True))
 
     @app.post("/admin/tariffs/{code}")
     async def admin_update_tariff(request: Request, code: str) -> Response:
@@ -490,6 +465,64 @@ def create_app() -> FastAPI:
             f"<input type='hidden' name='csrf' value='{csrf}'>{fields}<button>Сохранить</button></form></section>",
         )
 
+    @app.get("/bot")
+    async def open_bot() -> Response:
+        if BOT_USERNAME:
+            return RedirectResponse(f"https://t.me/{BOT_USERNAME}", status_code=303)
+        token = os.getenv("BOT_TOKEN")
+        if not token:
+            return Response("Бот пока не настроен.", status_code=503)
+        try:
+            async with Bot(token) as bot:
+                info = await bot.get_me()
+                return RedirectResponse(f"https://t.me/{info.username}", status_code=303)
+        except TelegramAPIError:
+            return Response("Telegram временно недоступен. Попробуйте позже.", status_code=503)
+
+    @app.get("/bot-qr.png")
+    async def bot_qr() -> Response:
+        output = BytesIO()
+        qrcode.make("https://pc-doctor.duckdns.org/bot").save(output, format="PNG")
+        return Response(output.getvalue(), media_type="image/png")
+
+    @app.get("/requests/{request_id}")
+    async def request_detail(request: Request, request_id: int) -> Response:
+        async with SessionLocal() as db:
+            _account, user = await identity(request, db)
+            item = await get_repair_request(db, request_id)
+            if not can_view_request(request, user, item):
+                return forbidden_page(request)
+            view = effective_view(request, user)
+            address = await db.scalar(select(RequestAddress).where(RequestAddress.request_id == request_id))
+            text = admin_request_text(item) if view in {"admin", "master"} else client_request_text(item)
+            photo = (
+                f"<img class='request-photo' src='/requests/{item.id}/photo?view={view}' alt='Фотография к заявке №{item.id}'>"
+                if item.ai_assessment and item.ai_assessment.photo_file_id else "<p>Фотография к заявке не приложена.</p>"
+            )
+            content = f"<a class='button secondary' href='/panel?view={view}'>← К списку</a><article class='request-card'><h1>Заявка №{item.id}</h1>"
+            content += text.replace(chr(10), "<br>") + photo
+            if address:
+                content += f"<p>Адрес выезда: {html.escape(address.address)}</p>"
+            if view in {"master", "admin"}:
+                content += staff_request_form(item, csrf_token(request))
+            return render_page(request, f"Заявка №{item.id}", content + "</article>")
+
+    @app.get("/requests/{request_id}/photo")
+    async def request_photo(request: Request, request_id: int) -> Response:
+        async with SessionLocal() as db:
+            _account, user = await identity(request, db)
+            item = await get_repair_request(db, request_id)
+            if not can_view_request(request, user, item):
+                return Response(status_code=403)
+            file_id = item.ai_assessment.photo_file_id if item.ai_assessment else None
+        if not file_id:
+            return Response(status_code=404)
+        try:
+            data = await download_request_photo(file_id)
+        except (TelegramAPIError, ValueError):
+            return Response("Фото временно недоступно.", status_code=502)
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
     return app
 
 
@@ -540,6 +573,44 @@ def verify_csrf(request: Request, form: dict[str, str]) -> bool:
     return isinstance(expected, str) and isinstance(supplied, str) and hmac.compare_digest(expected, supplied)
 
 
+def effective_view(request: Request, user: User) -> str:
+    """Разрешает предпросмотр только настоящему администратору."""
+    view = request.query_params.get("view")
+    return view if user.role == "admin" and view in {"client", "master"} else user.role
+
+
+def can_view_request(request: Request, user: User | None, item: RepairRequest | None) -> bool:
+    """Проверяет владельца или сотрудника до выдачи заявки и фотографии."""
+    return bool(user and item and (effective_view(request, user) in {"admin", "master"} or item.user_id == user.id))
+
+
+async def download_request_photo(file_id: str) -> bytes:
+    """Получает фото через сервер, не раскрывая Telegram-токен браузеру."""
+    async with Bot(os.getenv("BOT_TOKEN", "")) as bot:
+        output = BytesIO()
+        await bot.download(file_id, destination=output)
+        return output.getvalue()
+
+
+def requests_table(items: list[RepairRequest], staff: bool = False, view: str = "") -> str:
+    """Строит список с отдельной ссылкой на каждую заявку."""
+    statuses = {"new": "Новая", "in_progress": "В работе", "completed": "Завершена", "cancelled": "Отменена"}
+    priorities = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
+    rows = []
+    for item in items:
+        url = f"/requests/{item.id}" + (f"?view={view}" if view else "")
+        owner = f"<td>{html.escape(item.user.full_name)}</td>" if staff else ""
+        rows.append(
+            f"<tr><td><a href='{url}'>№{item.id}</a></td>{owner}"
+            f"<td><a href='{url}'>{html.escape(item.description[:100])}</a></td>"
+            f"<td>{statuses.get(item.status, 'Неизвестен')}</td><td>{priorities.get(item.priority, 'Средний')}</td>"
+            f"<td>{item.created_at:%d.%m.%Y}</td><td><a href='{url}'>Открыть →</a></td></tr>"
+        )
+    headings = "<th>Клиент</th>" if staff else ""
+    empty = "<p class='card'>Заявок пока нет.</p>"
+    return (f"<div class='table-wrap'><table><thead><tr><th>Номер</th>{headings}<th>Описание</th><th>Статус</th><th>Приоритет</th><th>Создана</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>" if rows else empty)
+
+
 async def identity(
     request: Request, db: AsyncSession
 ) -> tuple[WebsiteAccount | None, User | None]:
@@ -584,7 +655,7 @@ async def unlinked_panel(
         "<p>Чтобы видеть свои заявки, зарегистрируйтесь в Telegram-боте, "
         "затем создайте одноразовый код привязки.</p>"
     )
-    bot_link = f"<a href='https://t.me/{html.escape(BOT_USERNAME)}'>Открыть бота</a>" if BOT_USERNAME else ""
+    bot_link = "<a class='button primary' href='/bot'>Открыть бота</a>"
     return (
         f"<section class='hero'><h1>Здравствуйте!</h1><p>{html.escape(account.email)}</p></section>"
         f"<section class='card'><h2>Свяжите аккаунт с Telegram</h2>{message}{bot_link}"
@@ -601,19 +672,6 @@ async def client_panel(
     requests = await get_user_requests(db, user.id)
     tariffs = await get_urgency_tariffs(db)
     texts = await get_site_texts(db)
-    cards = []
-    for item in requests:
-        card = client_request_text(item)
-        address_row = await db.execute(
-            select(RequestAddress).where(RequestAddress.request_id == item.id)
-        )
-        address = address_row.scalar_one_or_none()
-        extra = (
-            f"<p><b>Адрес выезда:</b> {html.escape(address.address)}</p>" if address else ""
-        )
-        cards.append(
-            f"<article class='request-card'>{card.replace(chr(10), '<br>')}{extra}</article>"
-        )
     tariff_options = "".join(
         f"<option value='{item.code}'>{html.escape(item.label)} — "
         f"{format_rubles(item.surcharge_kopecks)}</option>"
@@ -628,14 +686,14 @@ async def client_panel(
         f"<label>Адрес выезда (необязательно)<input name='address' maxlength='500' value='{address_value}'></label>"
         f"<p class='muted'>{html.escape(texts['service_note'])}</p><button>Отправить заявку</button></form></section>"
     )
-    bot_link = f"<a href='https://t.me/{html.escape(BOT_USERNAME)}'>Открыть Telegram-бота</a>" if BOT_USERNAME else ""
+    bot_link = "<a class='button primary' href='/bot'>Открыть Telegram-бота</a>"
     return (
         f"<section class='hero'><h1>Кабинет клиента</h1><p>Здравствуйте, {html.escape(user.full_name)}.</p>"
         f"<p>Телефон: {html.escape(user.phone)}</p>"
         f"<p>{html.escape(texts['client_welcome'])}</p>{bot_link}</section>"
-        + create_form
+        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Роль администратора сохранена.</p>" if user.role == "admin" else create_form)
         + "<section><h2>Ваши заявки</h2>"
-        + ("".join(cards) or "<article class='card muted'>Заявок пока нет.</article>")
+        + requests_table(requests, view="client" if user.role == "admin" else "")
         + "</section>"
     )
 
@@ -643,24 +701,10 @@ async def client_panel(
 async def master_panel(request: Request, user: User, db: AsyncSession) -> str:
     """Рендерит рабочую очередь мастера с формами исправления."""
     requests = await get_all_requests(db)
-    cards = []
-    for item in requests:
-        address_row = await db.execute(
-            select(RequestAddress).where(RequestAddress.request_id == item.id)
-        )
-        address = address_row.scalar_one_or_none()
-        address_text = (
-            f"<p><b>Адрес выезда:</b> {html.escape(address.address)}</p>" if address else ""
-        )
-        cards.append(
-            f"<article class='request-card'><h2>Заявка №{item.id} · {html.escape(item.user.full_name)}</h2>"
-            f"{admin_request_text(item).replace(chr(10), '<br>')}{address_text}"
-            f"{staff_request_form(item, csrf_token(request))}</article>"
-        )
     return (
         f"<section class='hero'><h1>Панель мастера</h1><p>Здравствуйте, {html.escape(user.full_name)}. "
         f"Заявок в очереди: {len(requests)}.</p></section>"
-        + ("".join(cards) or "<article class='card muted'>Новых заявок пока нет.</article>")
+        + requests_table(requests, staff=True, view="master" if user.role == "admin" else "")
     )
 
 
@@ -742,6 +786,9 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
         else ""
     )
     role = getattr(request.state, "current_role", None)
+    actual_role = role
+    if role == "admin" and request.query_params.get("view") in {"client", "master"}:
+        role = request.query_params["view"]
     nav_items = navigation_items(role, request.url.path) if logged_in else []
     if logged_in and not nav_items:
         nav_items = [{"label": "Личный кабинет", "href": "/panel", "active": False}]
@@ -754,6 +801,8 @@ def render_page(request: Request, title: str, content: str) -> HTMLResponse:
             "logged_in": logged_in,
             "logout": logout,
             "nav_items": nav_items,
+            "is_admin": actual_role == "admin",
+            "bot_available": bool(os.getenv("BOT_TOKEN")),
             "account_name": getattr(request.state, "current_name", ""),
         },
     )
@@ -781,7 +830,7 @@ def navigation_items(role: str | None, path: str) -> list[dict[str, str | bool]]
 
 def public_home(logged_in: bool = False) -> str:
     """Формирует главную страницу без вымышленных отзывов и цен."""
-    bot_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "/register"
+    bot_url = "/bot"
     if logged_in:
         bot_url = "/panel"
     return templates.get_template("home.html").render(bot_url=bot_url)

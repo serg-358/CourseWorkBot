@@ -38,7 +38,9 @@
     </div>
   </header>
   <main class="page-shell{% if not logged_in %} public-shell{% endif %}">
+    {% if is_admin %}<nav class="preview-roles" aria-label="Просмотр интерфейсов"><span>Посмотреть интерфейс:</span><a href="/panel">Администратор</a><a href="/panel?view=client">Клиент</a><a href="/panel?view=master">Мастер</a></nav>{% endif %}
     {{ content|safe }}
+    {% if bot_available %}<aside class="bot-connect"><div><span class="eyebrow">МЫ В TELEGRAM</span><h2>Бот всегда под рукой</h2><p>Создайте заявку и получайте уведомления о ремонте.</p><a class="button primary" href="/bot" target="_blank" rel="noopener">Перейти в Telegram-бота ↗</a></div><img src="/bot-qr.png" width="160" height="160" alt="QR-код для перехода в Telegram-бота"></aside>{% endif %}
   </main>
   <footer class="site-footer"><div class="footer-inner"><span>ПК ДОКТОР</span><span>Заявки на ремонт и связь с мастером — в одном месте.</span></div></footer>
   <script>

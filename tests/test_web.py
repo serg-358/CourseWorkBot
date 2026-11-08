@@ -205,6 +205,8 @@ async def test_admin_can_assign_roles_but_bootstrap_role_is_protected(
         )
         master_page = await client.get("/panel")
         assert "Панель мастера" in master_page.text
+        assert "<table>" in master_page.text
+        master_page = await client.get(f"/requests/{repair_request_id}")
         assert "Подтверждённый диагноз" in master_page.text
         monkeypatch.setattr(
             web_app, "notify_client_status", AsyncMock(return_value=None)
@@ -260,3 +262,56 @@ def test_password_hash_uses_scrypt_and_checks_correct_password():
     assert password_hash.startswith("scrypt$")
     assert web_app.verify_password("strong-password-123", password_hash)
     assert not web_app.verify_password("wrong-password", password_hash)
+
+@pytest.mark.asyncio
+async def test_request_details_photos_and_previews_are_authorized(db_session_factory, monkeypatch):
+    monkeypatch.setattr(web_app, 'SessionLocal', db_session_factory)
+    from repair_bot.database.models import RepairRequestAiAssessment
+    async with db_session_factory() as db:
+        owner = User(telegram_id='92001', full_name='Owner', phone='+79990000001', role='client')
+        admin = User(telegram_id='92002', full_name='Admin', phone='+79990000002', role='admin')
+        db.add_all([owner, admin])
+        await db.flush()
+        item = RepairRequest(user_id=owner.id, description='Photo repair request')
+        db.add(item)
+        await db.flush()
+        db.add(RepairRequestAiAssessment(request_id=item.id, photo_file_id='test-file', client_causes='Client diagnosis', client_recommendations='Advice', safety_note='', master_diagnosis='Private diagnosis', parts='', tools='', catalog_item_codes=''))
+        for user, email in [(owner, 'owner@example.test'), (admin, 'admin-photo@example.test')]:
+            db.add(WebsiteAccount(user_id=user.id, email=email, password_hash=web_app.hash_password('test-pass-123')))
+        await db.commit()
+        request_id = item.id
+    mocked_photo = AsyncMock(return_value=b'jpeg-content')
+    monkeypatch.setattr(web_app, 'download_request_photo', mocked_photo)
+    transport = ASGITransport(app=web_app.app)
+    async with AsyncClient(transport=transport, base_url='http://testserver') as client:
+        assert (await client.get(f'/requests/{request_id}/photo')).status_code == 403
+        mocked_photo.assert_not_awaited()
+        for email in ['admin-photo@example.test', 'owner@example.test']:
+            page = await client.get('/login')
+            csrf = re.search(r"name='csrf' value='([^']+)'", page.text).group(1)
+            await client.post('/login', data={'csrf':csrf, 'email':email, 'password':'test-pass-123'})
+            if email.startswith('admin'):
+                preview = await client.get('/panel?view=client')
+                assert 'Кабинет клиента' in preview.text
+                assert 'Photo repair request' not in preview.text
+                assert (await client.get(f'/requests/{request_id}?view=client')).status_code == 403
+                assert (await client.get(f'/requests/{request_id}/photo?view=client')).status_code == 403
+                master = await client.get('/panel?view=master')
+                assert 'Photo repair request' in master.text
+                async with db_session_factory() as db:
+                    assert (await db.get(User, admin.id)).role == 'admin'
+            else:
+                detail = await client.get(f'/requests/{request_id}')
+                assert f'/requests/{request_id}/photo' in detail.text
+                assert 'Private diagnosis' not in detail.text
+                photo = await client.get(f'/requests/{request_id}/photo')
+                assert photo.content == b'jpeg-content'
+                assert photo.headers['cache-control'] == 'private, no-store'
+                assert (await client.get(f'/requests/{request_id + 100}/photo')).status_code == 403
+                assert 'Посмотреть интерфейс:' not in (await client.get('/panel?view=master')).text
+            page = await client.get('/panel')
+            csrf = re.search(r"name='csrf' value='([^']+)'", page.text).group(1)
+            await client.post('/logout', data={'csrf':csrf})
+        qr = await client.get('/bot-qr.png')
+        assert qr.status_code == 200
+        assert qr.content.startswith(b'\x89PNG')
