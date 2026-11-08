@@ -691,7 +691,7 @@ async def client_panel(
         f"<section class='hero'><h1>Кабинет клиента</h1><p>Здравствуйте, {html.escape(user.full_name)}.</p>"
         f"<p>Телефон: {html.escape(user.phone)}</p>"
         f"<p>{html.escape(texts['client_welcome'])}</p>{bot_link}</section>"
-        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Роль администратора сохранена.</p>" if user.role == "admin" else create_form)
+        + ("<p class='card'>Предпросмотр клиента: показаны ваши собственные заявки. Отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else create_form)
         + "<section><h2>Ваши заявки</h2>"
         + requests_table(requests, view="client" if user.role == "admin" else "")
         + "</section>"
