@@ -716,3 +716,25 @@ async def test_legacy_status_callback_updates_same_card_and_notifies_owner(monke
     callback.message.edit_text.assert_awaited_once()
     bot.send_message.assert_awaited_once_with("77", "🔧 Ваша заявка принята в работу.")
     assert "Заявка 1 из 1" in callback.message.edit_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_registration_phone_prompt_follows_name_and_has_only_cancel():
+    message = SimpleNamespace(
+        text="Александр <test>",
+        bot=SimpleNamespace(edit_message_reply_markup=AsyncMock()),
+        answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=10), message_id=22)),
+    )
+    state = SimpleNamespace(
+        update_data=AsyncMock(), set_state=AsyncMock(),
+        get_data=AsyncMock(return_value={"screen_chat_id": 10, "screen_message_id": 20}),
+    )
+    await registration.process_full_name(message, state)
+    message.answer.assert_awaited_once()
+    text = message.answer.call_args.args[0]
+    assert "шаг 2 из 2" in text and "Александр &lt;test&gt;" in text
+    buttons = message.answer.call_args.kwargs["reply_markup"].inline_keyboard
+    assert len(buttons) == 1 and buttons[0][0].callback_data == "dialog:cancel"
+    state.set_state.assert_awaited_once_with(registration.RegistrationStates.waiting_phone)
+    state.update_data.assert_any_await(screen_chat_id=10, screen_message_id=22)
+    message.bot.edit_message_reply_markup.assert_awaited_once()

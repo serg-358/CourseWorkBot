@@ -138,7 +138,13 @@ async def test_counter_ui_for_only_admins_and_exact_set(site, db_session_factory
     assert page.text.count('action="/admin/ai/set"') == 3
     assert "Безлимит" in page.text or "без лимита" in page.text
     page = await browser.get("/admin/users")
-    assert "AI-попытки" in page.text and "роль закреплена на сервере" in page.text
+    assert "AI-попытки" not in page.text and "роль закреплена на сервере" in page.text
+    assert "/admin/ai/set" not in page.text
+    assert "/admin/texts" not in page.text
+    assert (await browser.get("/admin/texts")).status_code == 404
+    filtered = await browser.get("/admin/ai?q=client")
+    assert filtered.text.count('action="/admin/ai/set"') == 1
+    assert (await browser.get("/admin/ai?q=no-such-user")).text.count('action="/admin/ai/set"') == 0
     assert f"action='/admin/users/{users['owner']}/role'" not in page.text
     reference = secrets.token_urlsafe(24)
     data = {"csrf": token, "user_id": users["client"], "count": "5", "reference": reference}

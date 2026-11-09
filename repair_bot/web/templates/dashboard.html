@@ -40,7 +40,7 @@
   </div>
   <aside class="dashboard-sidebar">
     <section class="dashboard-panel"><div class="panel-title"><h2>Быстрые действия</h2></div><nav class="quick-links">
-      {% if role == 'admin' %}<a href="/admin/users"><span>Пользователи и роли</span>→</a><a href="/admin/tariffs"><span>Изменить тарифы срочности</span>→</a><a href="/admin/texts"><span>Тексты кабинета</span>→</a>
+      {% if role == 'admin' %}<a href="/admin/users"><span>Пользователи и роли</span>→</a><a href="/admin/tariffs"><span>Изменить тарифы срочности</span>→</a><a href="/admin/ai"><span>AI-доступ пользователей</span>→</a>
       {% elif role == 'master' %}<a href="{{ list_url }}&status=in_progress"><span>Заявки в работе</span>→</a><a href="{{ list_url }}&status=closed"><span>Архив ремонтов</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Связаться с администратором</span>→</a>
       {% else %}<a href="/panel?tab=tariffs{{ suffix }}"><span>Услуги и цены</span>→</a><a href="/panel?tab=profile{{ suffix }}"><span>Мои контактные данные</span>→</a><a href="/panel?tab=feedback{{ suffix }}"><span>Задать вопрос</span>→</a>{% endif %}
     </nav></section>

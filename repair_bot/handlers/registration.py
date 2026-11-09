@@ -7,7 +7,7 @@ from aiogram import F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup
 from repair_bot.database.crud.requests import get_request_status_counts, get_user_requests
 from repair_bot.database.crud.users import create_user, get_all_users, get_user_by_telegram_id
 from repair_bot.database.crud.web import link_telegram_account
@@ -241,8 +241,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         message.from_user.id,
         "🖥 <b>ПК Доктор</b>\nПомогаем оформить заявку на ремонт компьютера.\n\n"
         "Опишите неисправность, а статус заявки сможете проверять в боте.\n\n"
-        "Для начала создадим профиль. Как вас зовут?",
-        reply_markup=dialog_keyboard(main_menu_keyboard("client")),
+        "<b>Регистрация · шаг 1 из 2</b>\nВведите ваше имя одним сообщением.\nНапример: Александр.",
+        reply_markup=dialog_keyboard(InlineKeyboardMarkup(inline_keyboard=[])),
         parse_mode="HTML",
     )
     await state.set_state(RegistrationStates.waiting_full_name)
@@ -299,17 +299,30 @@ async def process_full_name(message: Message, state: FSMContext) -> None:
             message,
             state,
             "⚠️ Имя должно содержать минимум 3 символа. Введите имя ещё раз:",
-            reply_markup=dialog_keyboard(main_menu_keyboard("client")),
+            reply_markup=dialog_keyboard(InlineKeyboardMarkup(inline_keyboard=[])),
         )
         return
 
     await state.update_data(full_name=full_name)
-    await edit_state_screen(
-        message,
-        state,
-        "📱 Ваш телефон? Например: 89999999999 или +7 (999) 999-99-99",
-        reply_markup=dialog_keyboard(main_menu_keyboard("client")),
+    data = await state.get_data()
+    # Старый вопрос сохраняется в переписке, но его кнопка больше не активна.
+    if data.get("screen_message_id"):
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=data["screen_chat_id"], message_id=data["screen_message_id"],
+                reply_markup=None,
+            )
+        except TelegramAPIError:
+            logger.debug("Не удалось убрать кнопку предыдущего шага регистрации")
+    prompt = await message.answer(
+        f"✅ Имя: {html.escape(full_name)}\n\n"
+        "<b>Регистрация · шаг 2 из 2</b>\n"
+        "Введите ваш номер телефона одним сообщением.\n"
+        "Например: 89999999999 или +7 (999) 999-99-99.",
+        reply_markup=dialog_keyboard(InlineKeyboardMarkup(inline_keyboard=[])),
+        parse_mode="HTML",
     )
+    await state.update_data(screen_chat_id=prompt.chat.id, screen_message_id=prompt.message_id)
     await state.set_state(RegistrationStates.waiting_phone)
 
 @router.message(RegistrationStates.waiting_full_name)
@@ -319,7 +332,7 @@ async def process_non_text_name(message: Message, state: FSMContext) -> None:
         message,
         state,
         "📝 Пожалуйста, отправьте имя текстом.",
-        reply_markup=dialog_keyboard(main_menu_keyboard("client")),
+        reply_markup=dialog_keyboard(InlineKeyboardMarkup(inline_keyboard=[])),
     )
 
 @router.message(RegistrationStates.waiting_phone, F.text)
@@ -331,7 +344,7 @@ async def process_phone(message: Message, state: FSMContext) -> None:
             message,
             state,
             "⚠️ Введите российский номер: 89999999999 или +7 (999) 999-99-99.",
-            reply_markup=dialog_keyboard(main_menu_keyboard("client")),
+            reply_markup=dialog_keyboard(InlineKeyboardMarkup(inline_keyboard=[])),
         )
         return
     if message.from_user is None:
@@ -386,5 +399,5 @@ async def process_non_text_phone(message: Message, state: FSMContext) -> None:
         message,
         state,
         "📱 Пожалуйста, отправьте номер телефона текстом.",
-        reply_markup=dialog_keyboard(main_menu_keyboard("client")),
+        reply_markup=dialog_keyboard(InlineKeyboardMarkup(inline_keyboard=[])),
     )

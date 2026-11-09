@@ -440,10 +440,6 @@ def create_app() -> FastAPI:
             if account is None or actor is None or actor.role != "admin":
                 return forbidden_page(request)
             users = await get_all_users(db)
-            counters = {}
-            for person in users:
-                counters[person.id] = available_analyses(await get_wallet(db, person))
-            await db.commit()
             selected_role = request.query_params.get("role", "")
             if selected_role in ROLE_NAMES:
                 users = [item for item in users if item.role == selected_role]
@@ -455,15 +451,14 @@ def create_app() -> FastAPI:
                 for role, name in ROLE_NAMES.items()
             )
             configured = configured_role_for_telegram_id(int(item.telegram_id))
-            role_control = f"<span class='dashboard-notice'>🔒 {ROLE_NAMES[configured]} — роль закреплена на сервере</span>" if configured else (
+            role_control = f"<span class='protected-role'>🔒 {ROLE_NAMES[configured]} — роль закреплена на сервере</span>" if configured else (
                 f"<form method='post' action='/admin/users/{item.id}/role'><input type='hidden' name='csrf' value='{csrf}'><select name='role'>{role_options}</select><button>Сохранить роль</button></form>"
             )
-            counter = templates.get_template("ai_counter.html").render(csrf=csrf, row={"id": item.id, "name": item.full_name, "role": item.role, "remaining": counters[item.id], "reference": secrets.token_urlsafe(24)})
-            rows.append(f"<tr><td>{html.escape(item.full_name)}</td><td>{html.escape(item.phone)}</td><td>{html.escape(item.telegram_id)}</td><td>{role_control}</td><td>{counter}</td></tr>")
+            rows.append(f"<tr><td>{html.escape(item.full_name)}</td><td>{html.escape(item.phone)}</td><td>{html.escape(item.telegram_id)}</td><td>{role_control}</td></tr>")
         content = (
             "<section class='card'><h2>Пользователи и роли</h2><p>Роль хранится на сервере и проверяется при каждом запросе.</p>"
             "<nav class='user-role-tabs' aria-label='Категории пользователей'><a href='/admin/users'>Все</a><a href='/admin/users?role=admin'>Администраторы</a><a href='/admin/users?role=master'>Мастера</a><a href='/admin/users?role=client'>Клиенты</a></nav>"
-            "<div class='table-wrap'><table><thead><tr><th>Имя</th><th>Телефон</th><th>Telegram ID</th><th>Роль</th><th>AI-попытки</th></tr></thead>"
+            "<div class='table-wrap'><table class='users-table'><thead><tr><th>Имя</th><th>Телефон</th><th>Telegram ID</th><th>Роль</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div></section>"
         )
         return render_page(request, "Управление ролями", content)
@@ -528,46 +523,6 @@ def create_app() -> FastAPI:
             "<section class='card'><h2>Доплаты за срочность</h2>"
             + "".join(forms)
             + "<p>Уже созданные заявки сохраняют снимок цены на момент оформления.</p></section>",
-        )
-
-    @app.post("/admin/texts")
-    async def admin_update_texts(request: Request) -> Response:
-        form = await read_form(request)
-        if not verify_csrf(request, form):
-            return error_page(request, "Сессия формы устарела. Обновите страницу.", "/panel")
-        async with SessionLocal() as db:
-            account, actor = await identity(request, db)
-            if account is None or actor is None or actor.role != "admin":
-                return forbidden_page(request)
-            for key in SITE_TEXT_DEFAULTS:
-                value = form.get(key, "").strip()
-                if not 1 <= len(value) <= 1000:
-                    return error_page(request, "Текст должен содержать до 1000 символов.", "/panel")
-                text_item = await db.get(SiteText, key)
-                if text_item is None:
-                    db.add(SiteText(key=key, value=value))
-                else:
-                    text_item.value = value
-            await db.commit()
-        return RedirectResponse("/admin/texts", status_code=303)
-
-    @app.get("/admin/texts", response_class=HTMLResponse)
-    async def admin_texts(request: Request) -> Response:
-        async with SessionLocal() as db:
-            account, actor = await identity(request, db)
-            if account is None or actor is None or actor.role != "admin":
-                return forbidden_page(request)
-            values = await get_site_texts(db)
-        csrf = csrf_token(request)
-        fields = "".join(
-            f"<label>{html.escape(key)}<textarea name='{key}' required>{html.escape(value)}</textarea></label>"
-            for key, value in values.items()
-        )
-        return render_page(
-            request,
-            "Тексты сайта",
-            "<section class='card'><h2>Управляемые тексты</h2><form method='post' action='/admin/texts'>"
-            f"<input type='hidden' name='csrf' value='{csrf}'>{fields}<button>Сохранить</button></form></section>",
         )
 
     @app.get("/bot")
@@ -1025,7 +980,7 @@ def navigation_items(role: str | None, path: str, tab: str = "overview", preview
     options = {
         "client": [common[0], ("Мои заявки", "/panel?tab=requests"), ("Услуги и цены", "/panel?tab=tariffs"), ("Сертификаты", "/panel?tab=certificates"), *common[1:]],
         "master": [common[0], ("Очередь", "/panel?tab=requests"), ("В работе", "/panel?tab=requests&status=in_progress"), ("Архив", "/panel?tab=requests&status=closed"), *common[1:]],
-        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("AI-доступ", "/admin/ai"), ("Тарифы", "/admin/tariffs"), ("Тексты", "/admin/texts"), common[1]],
+        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("AI-доступ", "/admin/ai"), ("Тарифы", "/admin/tariffs"), common[1]],
     }
     result = []
     for label, href in options.get(role or "", []):

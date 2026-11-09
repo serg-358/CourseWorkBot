@@ -113,13 +113,16 @@ def register_admin_tools(app, web) -> None:
             if not actor or actor.role != "admin":
                 return web.forbidden_page(request)
             users = (await db.scalars(select(User).order_by(User.full_name))).all()
+            query = request.query_params.get("q", "").strip()[:100]
             rows = []
             for user in users:
+                if query and query.casefold() not in f"{user.full_name} {user.phone} {user.telegram_id}".casefold():
+                    continue
                 wallet = await get_wallet(db, user)
                 rows.append({"id": user.id, "name": user.full_name, "phone": user.phone, "role": user.role, "remaining": available_analyses(wallet), "reference": secrets.token_urlsafe(24)})
             await db.commit()
             grants = (await db.scalars(select(AiCreditGrant).order_by(AiCreditGrant.id.desc()).limit(50))).all()
-        return web.render_page(request, "Доступ к AI", web.templates.get_template("ai_access.html").render(rows=rows, grants=grants, names={u.telegram_id: u.full_name for u in users}, csrf=web.csrf_token(request)))
+        return web.render_page(request, "Доступ к AI", web.templates.get_template("ai_access.html").render(query=query, rows=rows, grants=grants, names={u.telegram_id: u.full_name for u in users}, csrf=web.csrf_token(request)))
 
     @app.post("/admin/ai/set")
     async def set_access(request: Request):
