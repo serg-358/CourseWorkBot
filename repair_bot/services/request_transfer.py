@@ -51,7 +51,7 @@ def serialize_rows(rows: list[dict], kind: str) -> str:
     writer.writeheader()
     for row in rows:
         values = {k: json.dumps(row[k], ensure_ascii=False) if k in NESTED else str(row.get(k, "")) for k in FIELDS}
-        writer.writerow({k: "'" + v if v.startswith(("=", "+", "-", "@", "\t", "\r")) else v for k, v in values.items()})
+        writer.writerow({k: "'" + v if v.startswith(("'", "=", "+", "-", "@", "\t", "\r", "\n")) else v for k, v in values.items()})
     return "\ufeff" + output.getvalue()
 
 
@@ -97,7 +97,7 @@ def parse_transfer(payload: str, kind: str) -> list[dict]:
             for row in reader:
                 if None in row or any(v is None for v in row.values()):
                     raise ValueError("Повреждена строка CSV.")
-                row = {k: v[1:] if v.startswith("'") and v[1:].startswith(("=", "+", "-", "@", "\t", "\r")) else v for k, v in row.items()}
+                row = {k: v[1:] if v.startswith("'") and v[1:].startswith(("'", "=", "+", "-", "@", "\t", "\r", "\n")) else v for k, v in row.items()}
                 for key in NESTED:
                     row[key] = json.loads(row[key])
                 row["source_id"] = int(row["source_id"])

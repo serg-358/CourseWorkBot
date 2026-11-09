@@ -288,6 +288,9 @@ async def test_transfer_preview_atomic_idempotent_no_ai_or_gifts(db_session, kin
     row["status"] = "completed"
     payload = serialize_rows([row], kind)
     assert parse_transfer(payload, kind)[0] == row
+    for description in ("'=literal text", "''apostrophe", "\n=formula", "@formula"):
+        variant = {**row, "description": description}
+        assert parse_transfer(serialize_rows([variant], kind), kind)[0] == variant
     if kind == "csv":
         assert "'=Не работает" in payload and "'+7999" in payload
     batch, fresh, skipped = await preview_import(db, admin, payload, kind)
