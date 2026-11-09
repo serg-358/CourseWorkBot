@@ -34,6 +34,7 @@ def main_menu_keyboard(
             [InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")],
         ]
 
+    rows.append([InlineKeyboardButton(text="🔑 Код для сайта", callback_data="account:site-code")])
     if allow_role_switch:
         if demo_role:
             rows.append(

@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from repair_bot.database.models.base import Base, utcnow
 
 if TYPE_CHECKING:
+    from repair_bot.database.models.ai_access import AiUsage
+    from repair_bot.database.models.request_lifecycle import RequestLifecycle
     from repair_bot.database.models.gift_certificate import GiftCertificate
     from repair_bot.database.models.ai_assessment import RepairRequestAiAssessment
     from repair_bot.database.models.repair_request_staff_edit import RepairRequestStaffEdit
@@ -42,7 +44,7 @@ class RepairRequest(Base):
     staff_edits: Mapped[list["RepairRequestStaffEdit"]] = relationship(
         back_populates="request",
         cascade="all, delete-orphan",
-        order_by="RepairRequestStaffEdit.created_at",
+        order_by="(RepairRequestStaffEdit.created_at, RepairRequestStaffEdit.id)",
     )
     urgency: Mapped["RequestUrgency | None"] = relationship(
         back_populates="request", cascade="all, delete-orphan", uselist=False
@@ -51,3 +53,5 @@ class RepairRequest(Base):
         foreign_keys="GiftCertificate.target_request_id", uselist=False,
         lazy="selectin", viewonly=True,
     )
+    lifecycle: Mapped["RequestLifecycle | None"] = relationship(cascade="all, delete-orphan", uselist=False, lazy="selectin")
+    ai_access: Mapped["AiUsage | None"] = relationship(cascade="all, delete-orphan", uselist=False, lazy="selectin")

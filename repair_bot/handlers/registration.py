@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from repair_bot.database.crud.requests import get_request_status_counts, get_user_requests
 from repair_bot.database.crud.users import create_user, get_all_users, get_user_by_telegram_id
 from repair_bot.database.crud.web import link_telegram_account
+from repair_bot.database.crud.telegram_codes import issue_telegram_code
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import dialog_keyboard, main_menu_keyboard, request_navigation_keyboard
 from repair_bot.states import RegistrationStates, RequestStates
@@ -36,6 +37,42 @@ from aiogram import Router
 
 router = Router(name="registration")
 logger = logging.getLogger(__name__)
+
+
+async def send_site_code(message: Message, telegram_id: int) -> None:
+    """Показывает код только его владельцу в личном чате с ботом."""
+    if message.chat.type != "private" or message.chat.id != telegram_id:
+        await message.answer("Получите код в личном чате с ботом командой /sitecode.")
+        return
+    async with SessionLocal() as db:
+        status, code = await issue_telegram_code(db, str(telegram_id))
+    if status == "issued":
+        await message.answer(
+            f"🔑 <b>Код для привязки сайта</b>\n\n<code>{code}</code>\n\n"
+            "Введите эти 8 цифр в своём кабинете на https://pc-doctor.duckdns.org . "
+            "Код одноразовый и действует 10 минут.", parse_mode="HTML",
+        )
+    else:
+        messages = {
+            "not_registered": "Сначала зарегистрируйтесь в боте: /start.",
+            "already_linked": "Этот Telegram уже привязан к аккаунту сайта. Войдите в него по email и паролю.",
+            "cooldown": "Новый код можно запросить через минуту. Предыдущий ещё действует до истечения срока.",
+            "busy": "Не удалось выдать код. Попробуйте позже.",
+        }
+        await message.answer(messages[status])
+
+
+@router.message(Command("sitecode"))
+async def site_code_command(message: Message) -> None:
+    if message.from_user:
+        await send_site_code(message, message.from_user.id)
+
+
+@router.callback_query(F.data == "account:site-code")
+async def site_code_button(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await send_site_code(callback.message, callback.from_user.id)
 
 @router.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext) -> None:

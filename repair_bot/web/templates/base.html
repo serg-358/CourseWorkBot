@@ -69,6 +69,17 @@
           telegram.querySelector('summary').focus();
         }
       });
+      document.querySelectorAll('[data-request-form]').forEach((form) => {
+        form.addEventListener('submit', (event) => {
+          if (form.dataset.sending) { event.preventDefault(); return; }
+          form.dataset.sending = '1';
+          form.querySelectorAll('button[type="submit"], button:not([type])').forEach((button) => {
+            button.disabled = true;
+            button.textContent = 'Сохраняем заявку и выполняем доступную AI-оценку…';
+          });
+        });
+      });
+      window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload(); });
     })();
   </script>
 </body>

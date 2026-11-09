@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import time
+import sys
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -42,9 +43,10 @@ from repair_bot.database.crud.requests import (
     get_all_requests,
     get_repair_request,
     get_user_requests,
-    save_ai_assessment,
     update_request_status,
 )
+from repair_bot.database.crud.telegram_codes import verify_telegram_code
+from repair_bot.services.staff_assessment import effective_staff_details
 from repair_bot.database.crud.users import get_all_users
 from repair_bot.database.crud.certificates import list_certificates, reserve_certificate, sync_certificates
 from repair_bot.database.models import (
@@ -64,7 +66,9 @@ from repair_bot.handlers.common import (
 )
 from repair_bot.handlers.staff_requests import parse_client_price
 from repair_bot.services.ai.diagnostics import analyze_repair_request
-from repair_bot.services.pricing.catalog import calculate_cost
+from repair_bot.services.ai.budget import analyze_with_budget
+from repair_bot.database.crud.request_lifecycle import request_photo_id
+from repair_bot.web.admin_tools import register_admin_tools, transfer_controls, request_tabs, trash_control
 
 from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES, service_catalog
 
@@ -299,6 +303,26 @@ def create_app() -> FastAPI:
         )
         return render_page(request, "Привязка Telegram", link_content)
 
+    @app.post("/account/telegram-code")
+    async def confirm_telegram_code(request: Request) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        account_id = request.session.get("account_id")
+        if not isinstance(account_id, int):
+            return RedirectResponse("/login", status_code=303)
+        async with SessionLocal() as db:
+            result = await verify_telegram_code(db, account_id, form.get("code", ""), request.client.host if request.client else "unknown")
+        if result in {"linked", "account_already_linked"}:
+            return RedirectResponse("/panel", status_code=303)
+        messages = {
+            "invalid": "Код неверный, уже использован или истёк. Получите новый в боте.",
+            "invalid_format": "Введите 8 цифр кода из Telegram.",
+            "rate_limited": "Лимит попыток исчерпан. Подождите 10 минут.",
+            "telegram_already_linked": "Этот Telegram уже связан с другим аккаунтом сайта.",
+        }
+        return error_page(request, messages[result], "/panel")
+
     @app.post("/requests/create")
     async def create_request_from_site(request: Request) -> Response:
         form = await read_form(request)
@@ -306,7 +330,7 @@ def create_app() -> FastAPI:
             return error_page(request, "Сессия формы устарела. Обновите страницу.", "/panel")
         async with SessionLocal() as db:
             account, user = await identity(request, db)
-            if account is None or user is None or user.role != "client":
+            if account is None or user is None or user.role not in {"client", "admin"}:
                 return forbidden_page(request)
             description = form.get("description", "").strip()
             address = form.get("address", "").strip()
@@ -324,29 +348,9 @@ def create_app() -> FastAPI:
                 db.add(RequestAddress(request_id=repair_request.id, address=address))
                 account.address = address
                 await db.commit()
-            try:
-                ai_result = await analyze_repair_request(description, None)
-                if ai_result is not None:
-                    items, cost, price = calculate_cost(ai_result.catalog_item_codes)
-                    codes = [item.code for item in items] if cost is not None else []
-                    await save_ai_assessment(
-                        db,
-                        repair_request.id,
-                        priority=ai_result.priority,
-                        photo_file_id=None,
-                        client_causes=ai_result.client_causes,
-                        client_recommendations=ai_result.client_recommendations,
-                        safety_note=ai_result.safety_note,
-                        master_diagnosis=ai_result.master_diagnosis,
-                        parts=ai_result.parts,
-                        tools=ai_result.tools,
-                        catalog_item_codes=",".join(codes),
-                        estimated_cost_kopecks=cost,
-                        client_price_kopecks=price,
-                    )
-            except Exception:
-                logger.exception("AI-оценка веб-заявки №%s недоступна", repair_request.id)
-        return RedirectResponse("/panel", status_code=303)
+            actor_id = user.id
+        await analyze_with_budget(SessionLocal, repair_request.id, actor_id, analyze_repair_request, description)
+        return RedirectResponse(f"/requests/{repair_request.id}?created=1", status_code=303)
 
     @app.post("/staff/requests/{request_id}/update")
     async def staff_update_request(request: Request, request_id: int) -> Response:
@@ -363,13 +367,17 @@ def create_app() -> FastAPI:
             previous_status = repair_request.status
             owner_telegram_id = repair_request.user.telegram_id
             diagnosis = form.get("diagnosis", "").strip()
+            parts = form.get("parts")
+            tools = form.get("tools")
+            if any(value is not None and len(value.strip()) > 3000 for value in (parts, tools)):
+                return error_page(request, "Детали и инструменты — не более 3000 символов каждый.", f"/requests/{request_id}")
             price = parse_client_price(form.get("price", ""))
             status = form.get("status", repair_request.status)
             if not 3 <= len(diagnosis) <= 3000 or price is None:
                 return error_page(request, "Проверьте диагноз и сумму (до двух знаков после запятой).", "/panel")
             if status not in {"new", "in_progress", "completed", "cancelled"}:
                 return error_page(request, "Недопустимый статус заявки.", "/panel")
-            await add_request_staff_edit(db, request_id, user.id, diagnosis, price)
+            await add_request_staff_edit(db, request_id, user.id, diagnosis, price, parts=parts.strip() if parts is not None else None, tools=tools.strip() if tools is not None else None)
             await update_request_status(db, request_id, status)
         if status != previous_status:
             await notify_client_status(owner_telegram_id, request_id, status)
@@ -441,8 +449,9 @@ def create_app() -> FastAPI:
             account, actor = await identity(request, db)
             if account is None or actor is None or actor.role != "admin":
                 return forbidden_page(request)
-            requests = await get_all_requests(db)
-        return render_page(request, "Все заявки", "<h1>Все заявки</h1>" + requests_table(requests, staff=True, params=dict(request.query_params), path="/admin/requests"))
+            requests = await get_all_requests(db, trash=request.query_params.get("trash") == "1")
+        params = dict(request.query_params)
+        return render_page(request, "Все заявки", "<h1>Заявки</h1>" + request_tabs(params) + transfer_controls(params) + requests_table(requests, staff=True, params=params, path="/admin/requests"))
 
     @app.get("/admin/certificates")
     async def admin_certificates(request: Request) -> Response:
@@ -611,7 +620,7 @@ def create_app() -> FastAPI:
     async def request_detail(request: Request, request_id: int) -> Response:
         async with SessionLocal() as db:
             _account, user = await identity(request, db)
-            item = await get_repair_request(db, request_id)
+            item = await get_repair_request(db, request_id, include_deleted=bool(user and user.role == "admin" and effective_view(request, user) == "admin"))
             if not can_view_request(request, user, item):
                 return forbidden_page(request)
             view = effective_view(request, user)
@@ -619,13 +628,22 @@ def create_app() -> FastAPI:
             text = admin_request_text(item) if view in {"admin", "master"} else client_request_text(item)
             photo = (
                 f"<img class='request-photo' src='/requests/{item.id}/photo?view={view}' alt='Фотография к заявке №{item.id}'>"
-                if item.ai_assessment and item.ai_assessment.photo_file_id else "<p>Фотография к заявке не приложена.</p>"
+                if request_photo_id(item) else "<p>Фотография к заявке не приложена.</p>"
             )
             content = f"<a class='button secondary' href='/panel?tab=requests&view={view}'>← К списку</a><article class='request-card'><h1>Заявка №{item.id}</h1>"
+            if request.query_params.get("created") == "1":
+                content += "<p class='dashboard-notice'>Заявка создана и сохранена. Мастер увидит ваше обращение.</p>"
             content += text.replace(chr(10), "<br>") + photo
             if address:
                 content += f"<p>Адрес выезда: {html.escape(address.address)}</p>"
-            if view in {"master", "admin"}:
+            deleted = bool(item.lifecycle and item.lifecycle.deleted_at)
+            if user.role == "admin" and view == "admin":
+                content += trash_control(item, csrf_token(request))
+            if item.lifecycle and item.lifecycle.imported:
+                content += "<p class='muted'>Импортированная заявка: исходные данные сохранены, автоматическая выдача сертификатов отключена.</p>"
+            if not deleted and item.status in {"new", "in_progress"} and not item.ai_assessment and not (item.lifecycle and item.lifecycle.imported):
+                content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатно, последующие — 30 ₽ после подтверждения оплаты администратором. При технической ошибке обратитесь за компенсацией.</p><button>Выполнить доступную AI-диагностику</button></form>"
+            if not deleted and view in {"master", "admin"}:
                 content += staff_request_form(item, csrf_token(request))
             return render_page(request, f"Заявка №{item.id}", content + "</article>")
 
@@ -633,10 +651,10 @@ def create_app() -> FastAPI:
     async def request_photo(request: Request, request_id: int) -> Response:
         async with SessionLocal() as db:
             _account, user = await identity(request, db)
-            item = await get_repair_request(db, request_id)
+            item = await get_repair_request(db, request_id, include_deleted=bool(user and user.role == "admin" and effective_view(request, user) == "admin"))
             if not can_view_request(request, user, item):
                 return Response(status_code=403)
-            file_id = item.ai_assessment.photo_file_id if item.ai_assessment else None
+            file_id = request_photo_id(item)
         if not file_id:
             return Response(status_code=404)
         try:
@@ -645,6 +663,7 @@ def create_app() -> FastAPI:
             return Response("Фото временно недоступно.", status_code=502)
         return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
+    register_admin_tools(app, sys.modules[__name__])
     return app
 
 
@@ -703,7 +722,7 @@ def effective_view(request: Request, user: User) -> str:
 
 def can_view_request(request: Request, user: User | None, item: RepairRequest | None) -> bool:
     """Проверяет владельца или сотрудника до выдачи заявки и фотографии."""
-    return bool(user and item and (effective_view(request, user) in {"admin", "master"} or item.user_id == user.id))
+    return bool(user and item and (not item.lifecycle or item.lifecycle.deleted_at is None or (user.role == "admin" and effective_view(request, user) == "admin")) and (effective_view(request, user) in {"admin", "master"} or item.user_id == user.id))
 
 
 async def download_request_photo(file_id: str) -> bytes:
@@ -789,14 +808,15 @@ async def client_panel(
     )
     address_value = html.escape(account.address or "", quote=True)
     create_form = (
-        "<section class='card'><h2>Создать заявку</h2><form method='post' action='/requests/create'>"
+        "<section class='card'><h2>Создать заявку</h2><p>Первая AI-диагностика бесплатная, последующие — 30 ₽. Без AI-доступа заявка всё равно передаётся мастеру. Оплату проверяет администратор.</p><form method='post' action='/requests/create' data-request-form>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         "<label>Описание проблемы<textarea name='description' minlength='10' maxlength='4000' required></textarea></label>"
         f"<label>Срочность<select name='urgency'>{tariff_options}</select></label>"
         f"<label>Адрес выезда (необязательно)<input name='address' maxlength='500' value='{address_value}'></label>"
         f"<p class='muted'>{html.escape(texts['service_note'])}</p><button>Отправить заявку</button></form></section>"
     )
-    form_html = ("<p class='dashboard-notice'>Предпросмотр клиента: показаны только ваши заявки; отправка формы отключена.</p><fieldset disabled>" + create_form + "</fieldset>" if user.role == "admin" else ("<details class='create-request-panel' open>" if request.query_params.get("create") == "1" else "<details class='create-request-panel'>") + "<summary>＋ Создать заявку</summary>" + create_form + "</details>")
+    preview_note = "<p class='dashboard-notice'>Вы создаёте настоящую заявку от своего аккаунта. Роль администратора сохраняется.</p>" if user.role == "admin" else ""
+    form_html = preview_note + ("<details class='create-request-panel' open>" if request.query_params.get("create") == "1" else "<details class='create-request-panel'>") + "<summary>＋ Создать заявку</summary>" + create_form + "</details>"
     return (
         "<section class='list-heading'><div><h1>Мои заявки</h1><p>Список обращений, статусы и предварительная стоимость ремонта.</p></div></section>"
         + form_html
@@ -853,6 +873,7 @@ def dashboard_content(request: Request, user: User, role: str, items: list[Repai
 def staff_request_form(item: RepairRequest, csrf: str) -> str:
     """Строит форму статуса и подтверждённой правки диагноза/цены."""
     latest = item.staff_edits[-1] if item.staff_edits else None
+    parts, tools = effective_staff_details(item)
     diagnosis = latest.diagnosis if latest else (
         item.ai_assessment.master_diagnosis if item.ai_assessment else ""
     )
@@ -873,6 +894,8 @@ def staff_request_form(item: RepairRequest, csrf: str) -> str:
         f"<form method='post' action='/staff/requests/{item.id}/update'>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         f"<label>Подтверждённый диагноз<textarea name='diagnosis' minlength='3' maxlength='3000' required>{html.escape(diagnosis)}</textarea></label>"
+        f"<label>Детали для проверки<textarea name='parts' maxlength='3000'>{html.escape(parts)}</textarea></label>"
+        f"<label>Инструменты<textarea name='tools' maxlength='3000'>{html.escape(tools)}</textarea></label>"
         f"<label>Стоимость ремонта, ₽<input name='price' type='number' min='0' step='0.01' value='{price_value}' required></label>"
         f"<label>Статус<select name='status'>{status_options}</select></label>"
         "<button>Сохранить проверку и статус</button></form>"
@@ -942,7 +965,7 @@ def navigation_items(role: str | None, path: str, tab: str = "overview", preview
     options = {
         "client": [common[0], ("Мои заявки", "/panel?tab=requests"), ("Услуги и цены", "/panel?tab=tariffs"), ("Сертификаты", "/panel?tab=certificates"), *common[1:]],
         "master": [common[0], ("Очередь", "/panel?tab=requests"), ("В работе", "/panel?tab=requests&status=in_progress"), ("Архив", "/panel?tab=requests&status=closed"), *common[1:]],
-        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("Тарифы", "/admin/tariffs"), ("Тексты", "/admin/texts"), common[1]],
+        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("AI-доступ", "/admin/ai"), ("Тарифы", "/admin/tariffs"), ("Тексты", "/admin/texts"), common[1]],
     }
     result = []
     for label, href in options.get(role or "", []):

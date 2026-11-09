@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from repair_bot.database.models.base import Base, utcnow
 
 if TYPE_CHECKING:
+    from repair_bot.database.models.staff_edit_details import StaffEditDetails
     from repair_bot.database.models.repair_request import RepairRequest
     from repair_bot.database.models.user import User
 
@@ -36,4 +37,7 @@ class RepairRequestStaffEdit(Base):
     request: Mapped["RepairRequest"] = relationship(back_populates="staff_edits")
     editor: Mapped["User | None"] = relationship(
         back_populates="request_edits", foreign_keys=[editor_user_id]
+    )
+    details: Mapped["StaffEditDetails | None"] = relationship(
+        back_populates="edit", cascade="all, delete-orphan", uselist=False, lazy="selectin"
     )

@@ -13,6 +13,8 @@ from repair_bot.database.crud.users import get_all_users
 from repair_bot.keyboards import main_menu_keyboard
 from repair_bot.keyboards.requests import format_surcharge
 from repair_bot.services.pricing.request_total import final_total, certificate_discount
+from repair_bot.services.ai.budget import ai_access_notice
+from repair_bot.services.staff_assessment import effective_staff_details
 from repair_bot.database.models import RepairRequest
 
 logger = logging.getLogger("repair_bot.handlers")
@@ -109,13 +111,15 @@ def admin_request_text(request: RepairRequest) -> str:
         f"📱 Телефон: {html.escape(request.user.phone)}\n"
         f"🎯 Приоритет: {priority_labels.get(request.priority, request.priority)}\n"
         f"📌 Статус: {status_labels.get(request.status, request.status)}\n\n"
-        f"{html.escape(request_description_preview(request.description))}"
+        f"{html.escape(request_description_preview(request.description)[-700:])}"
     )
+    parts, tools = effective_staff_details(request)
+    text += f"\n\n<b>🧩 Детали для проверки</b>\n{html.escape(parts[:400]) or 'Не указаны'}\n\n<b>🛠 Инструменты</b>\n{html.escape(tools[:400]) or 'Не указаны'}"
     assessment = getattr(request, "ai_assessment", None)
     staff_edits = getattr(request, "staff_edits", None) or []
     current_edit = staff_edits[-1] if staff_edits else None
     if assessment is None:
-        text += "\n\n⚠️ ИИ-диагностика недоступна."
+        text += "\n\n⚠️ " + html.escape(ai_access_notice(request))
     else:
         cost = format_rubles(assessment.estimated_cost_kopecks)
         price = format_rubles(assessment.client_price_kopecks)
@@ -123,9 +127,9 @@ def admin_request_text(request: RepairRequest) -> str:
         text += (
             "\n\n🤖 <b>Исходная предварительная оценка ИИ</b>\n\n"
             f"<b>⏱ Технический приоритет</b>\n{urgency}\n\n"
-            f"<b>🔎 Предварительная причина</b>\n{html.escape(assessment.master_diagnosis)}\n\n"
-            f"<b>🧩 Детали для проверки</b>\n{html.escape(assessment.parts)}\n\n"
-            f"<b>🛠 Инструменты</b>\n{html.escape(assessment.tools)}\n\n"
+            f"<b>🔎 Предварительная причина</b>\n{html.escape(assessment.master_diagnosis[:350])}\n\n"
+            f"<b>Исходные детали ИИ</b>\n{html.escape(assessment.parts[:150])}\n\n"
+            f"<b>Исходные инструменты ИИ</b>\n{html.escape(assessment.tools[:150])}\n\n"
             f"<b>💰 Расчёт ИИ</b>\nСебестоимость: {cost}\nЦена для клиента: {price}"
         )
     if current_edit is not None:
@@ -136,7 +140,7 @@ def admin_request_text(request: RepairRequest) -> str:
         discount_line = f"Скидка по сертификату: {format_rubles(discount)}\n" if discount else ""
         text += (
             "\n\n✅ <b>Последняя проверка сотрудника</b>\n"
-            f"Диагноз: {html.escape(current_edit.diagnosis)}\n"
+            f"Диагноз: {html.escape(current_edit.diagnosis[:600])}\n"
             f"Стоимость ремонта: {format_rubles(current_edit.client_price_kopecks)}\n"
             f"Срочность: {urgency_label} ({format_surcharge(surcharge)})\n"
             f"{discount_line}"
@@ -192,7 +196,7 @@ def client_request_text(request: RepairRequest) -> str:
             f"Специалист: {html.escape(current_edit.editor_name)}"
         )
     if assessment is None:
-        return f"{text}{urgency_summary}"
+        return f"{text}{urgency_summary}\n\n{html.escape(ai_access_notice(request))}"
     price = format_rubles(assessment.client_price_kopecks)
     total = (
         format_rubles(final_total(request, assessment.client_price_kopecks, surcharge))

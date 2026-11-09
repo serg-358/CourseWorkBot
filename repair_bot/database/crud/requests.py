@@ -12,13 +12,17 @@ from repair_bot.database.models import (
     RequestUrgency,
     User,
     GiftCertificate,
+    StaffEditDetails,
+    RequestLifecycle,
 )
 
 
 async def get_request_status_counts(db: AsyncSession) -> dict[str, int]:
     """Возвращает количество заявок по статусам одним запросом к базе."""
     result = await db.execute(
-        select(RepairRequest.status, func.count(RepairRequest.id)).group_by(
+        select(RepairRequest.status, func.count(RepairRequest.id)).where(
+            ~RepairRequest.lifecycle.has(RequestLifecycle.deleted_at.is_not(None))
+        ).group_by(
             RepairRequest.status
         )
     )
@@ -54,7 +58,7 @@ async def create_repair_request(
     return request
 
 
-async def get_repair_request(db: AsyncSession, request_id: int) -> RepairRequest | None:
+async def get_repair_request(db: AsyncSession, request_id: int, *, include_deleted: bool = False) -> RepairRequest | None:
     """Возвращает заявку по первичному ключу вместе с владельцем."""
     result = await db.execute(
         select(RepairRequest)
@@ -66,7 +70,7 @@ async def get_repair_request(db: AsyncSession, request_id: int) -> RepairRequest
                 RepairRequestStaffEdit.editor
             ),
         )
-        .where(RepairRequest.id == request_id)
+        .where(RepairRequest.id == request_id, True if include_deleted else ~RepairRequest.lifecycle.has(RequestLifecycle.deleted_at.is_not(None)))
         .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
@@ -83,13 +87,13 @@ async def get_user_requests(db: AsyncSession, user_id: int) -> list[RepairReques
                 RepairRequestStaffEdit.editor
             ),
         )
-        .where(RepairRequest.user_id == user_id)
+        .where(RepairRequest.user_id == user_id, ~RepairRequest.lifecycle.has(RequestLifecycle.deleted_at.is_not(None)))
         .order_by(RepairRequest.created_at.desc(), RepairRequest.id.desc())
     )
     return list(result.scalars().all())
 
 
-async def get_all_requests(db: AsyncSession) -> list[RepairRequest]:
+async def get_all_requests(db: AsyncSession, *, trash: bool = False) -> list[RepairRequest]:
     """Возвращает заявки вместе с данными их владельцев."""
     result = await db.execute(
         select(RepairRequest)
@@ -101,6 +105,7 @@ async def get_all_requests(db: AsyncSession) -> list[RepairRequest]:
                 RepairRequestStaffEdit.editor
             ),
         )
+        .where(RepairRequest.lifecycle.has(RequestLifecycle.deleted_at.is_not(None)) if trash else ~RepairRequest.lifecycle.has(RequestLifecycle.deleted_at.is_not(None)))
         .order_by(RepairRequest.created_at.desc(), RepairRequest.id.desc())
     )
     return list(result.scalars().all())
@@ -181,18 +186,28 @@ async def add_request_staff_edit(
     editor_user_id: int,
     diagnosis: str,
     client_price_kopecks: int,
+    *,
+    parts: str | None = None,
+    tools: str | None = None,
 ) -> RepairRequestStaffEdit | None:
     """Добавляет подтверждённую правку и сохраняет автора для аудита."""
-    request = await db.get(RepairRequest, request_id)
+    request = await get_repair_request(db, request_id)
     editor = await db.get(User, editor_user_id)
-    if request is None or editor is None:
+    if request is None or editor is None or editor.role not in {"admin", "master"}:
         return None
+    from repair_bot.services.staff_assessment import effective_staff_details
+    previous_parts, previous_tools = effective_staff_details(request)
+    parts = previous_parts if parts is None else parts
+    tools = previous_tools if tools is None else tools
+    if len(parts) > 3000 or len(tools) > 3000:
+        raise ValueError("Детали и инструменты должны содержать не более 3000 символов.")
     edit = RepairRequestStaffEdit(
         request_id=request_id,
         editor_user_id=editor_user_id,
         editor_name=editor.full_name,
         diagnosis=diagnosis,
         client_price_kopecks=client_price_kopecks,
+        details=StaffEditDetails(parts=parts, tools=tools),
     )
     db.add(edit)
     await db.flush()

@@ -55,6 +55,7 @@ def request_navigation_keyboard(
     has_photo: bool = False,
     can_append_description: bool = False,
     can_edit_assessment: bool = False,
+    can_analyze: bool = False,
 ) -> InlineKeyboardMarkup:
     """Объединяет листание заявки, действия сотрудника и основное меню."""
     callback_prefix = f"requests:{view}"
@@ -75,6 +76,8 @@ def request_navigation_keyboard(
         )
 
     rows = [navigation]
+    if request_id is not None and can_analyze:
+        rows.append([InlineKeyboardButton(text="🔎 Выполнить доступную AI-диагностику", callback_data=f"request:ai:{request_id}")])
     if request_id is not None and current_status is not None:
         rows.extend(request_status_keyboard(request_id, current_status).inline_keyboard)
     if request_id is not None and has_photo:

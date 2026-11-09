@@ -6,7 +6,7 @@ from aiogram import F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from repair_bot.database.crud.requests import append_request_description, create_repair_request, get_repair_request, get_user_requests, save_ai_assessment
+from repair_bot.database.crud.requests import append_request_description, create_repair_request, get_repair_request, get_user_requests
 from repair_bot.database.crud.users import get_user_by_telegram_id
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import (
@@ -21,7 +21,8 @@ from repair_bot.database.crud.pricing import get_urgency_tariffs, get_urgency_ta
 from repair_bot.database.models import RepairRequest
 from repair_bot.states import RequestStates
 from repair_bot.services.ai.diagnostics import analyze_repair_request
-from repair_bot.services.pricing.catalog import calculate_cost
+from repair_bot.services.ai.budget import analyze_with_budget
+from repair_bot.database.crud.request_lifecycle import set_request_photo, request_photo_id
 from repair_bot.handlers.common import (
     CLIENT_EDITABLE_STATUSES,
     MAX_REQUEST_DESCRIPTION_LENGTH,
@@ -81,8 +82,43 @@ async def show_my_requests(callback: CallbackQuery, state: FSMContext) -> None:
             menu=menu_for_user(callback.from_user.id, role),
             request_id=request.id,
             can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
+            can_analyze=request.status in CLIENT_EDITABLE_STATUSES and not getattr(request, "ai_assessment", None) and not (getattr(request, "lifecycle", None) and request.lifecycle.imported),
         )
     await edit_callback_screen(callback, text, reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("request:ai:"))
+async def retry_request_ai(callback: CallbackQuery) -> None:
+    """Повторная попытка требует доступной квоты, принадлежность проверяет сервер."""
+    if callback.message is None or callback.from_user is None:
+        return
+    try:
+        request_id = int((callback.data or "").rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer()
+        return
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        item = await get_repair_request(db, request_id)
+        if not user or not item or (item.user_id != user.id and user.role not in {"admin", "master"}):
+            await callback.answer("Нет доступа к заявке.", show_alert=True)
+            return
+        file_id, description, actor_id, role = request_photo_id(item), item.description, user.id, user.role
+    await callback.answer("Проверяем доступ к AI…")
+    photo = None
+    if file_id:
+        try:
+            output = BytesIO()
+            await callback.bot.download(file_id, destination=output)
+            photo = output.getvalue()
+        except TelegramAPIError:
+            await edit_callback_screen(callback, "Фото временно недоступно. Попытка не списана.", reply_markup=menu_for_user(callback.from_user.id, role))
+            return
+    await analyze_with_budget(SessionLocal, request_id, actor_id, analyze_repair_request, description, photo, file_id)
+    async with SessionLocal() as db:
+        item = await get_repair_request(db, request_id)
+    if item:
+        await edit_callback_screen(callback, client_request_text(item), reply_markup=menu_for_user(callback.from_user.id, role), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("requests:page-info"))
 async def show_page_info(callback: CallbackQuery) -> None:
@@ -294,29 +330,9 @@ async def create_and_analyze_request(
             return None, "client"
         request = await create_repair_request(db, user.id, description, urgency_code)
         role = user.role
-    try:
-        result = await analyze_repair_request(description, photo_bytes)
-        if result is not None:
-            items, cost, price = calculate_cost(result.catalog_item_codes)
-            codes = [item.code for item in items] if cost is not None else []
-            async with SessionLocal() as db:
-                await save_ai_assessment(
-                    db,
-                    request.id,
-                    priority=result.priority,
-                    photo_file_id=photo_file_id,
-                    client_causes=result.client_causes,
-                    client_recommendations=result.client_recommendations,
-                    safety_note=result.safety_note,
-                    master_diagnosis=result.master_diagnosis,
-                    parts=result.parts,
-                    tools=result.tools,
-                    catalog_item_codes=",".join(codes),
-                    estimated_cost_kopecks=cost,
-                    client_price_kopecks=price,
-                )
-    except Exception:
-        logger.exception("ИИ-диагностика заявки №%s недоступна", request.id)
+    async with SessionLocal() as db:
+        await set_request_photo(db, request.id, photo_file_id)
+    await analyze_with_budget(SessionLocal, request.id, user.id, analyze_repair_request, description, photo_bytes, photo_file_id)
     async with SessionLocal() as db:
         saved_request = await get_repair_request(db, request.id)
     return saved_request, role
@@ -351,11 +367,6 @@ async def finish_request_creation(
         await message.answer("ℹ️ Сначала зарегистрируйтесь командой /start.")
         return
     text = f"✅ Заявка №{request.id} создана.\n\n{client_request_text(request)}"
-    if getattr(request, "ai_assessment", None) is None:
-        text += (
-            "\n\n⚠️ Предварительная AI-оценка сейчас недоступна. "
-            "Заявка передана мастеру, который уточнит причину и стоимость."
-        )
     await message.answer(text, reply_markup=menu_for_user(actor_id, role), parse_mode="HTML")
 
 async def delete_ai_progress_message(progress_message: Message) -> None:

@@ -86,6 +86,8 @@ def requests_table(items: list[RepairRequest], staff: bool = False, view: str = 
     def options(values: dict[str, str], selected: str) -> str:
         return "".join(f"<option value='{key}'{' selected' if selected == key else ''}>{label}</option>" for key, label in values.items())
     hidden = "<input type='hidden' name='tab' value='requests'>" + (f"<input type='hidden' name='view' value='{view}'>" if view else "")
+    if params.get("trash") == "1":
+        hidden += "<input type='hidden' name='trash' value='1'>"
     filters = (
         f"<form class='request-filters' method='get' action='{path}'>{hidden}"
         f"<label>Сортировать<select name='sort'>{options({'date':'По дате','id':'По номеру','status':'По статусу','priority':'По приоритету','price':'По цене'}, params.get('sort','date'))}</select></label>"

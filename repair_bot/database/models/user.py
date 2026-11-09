@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from repair_bot.database.models.base import Base, utcnow
 
 if TYPE_CHECKING:
+    from repair_bot.database.models.request_lifecycle import RequestImportBatch
+    from repair_bot.database.models.telegram_access_code import TelegramAccessCode
     from repair_bot.database.models.gift_certificate import GiftCertificate
     from repair_bot.database.models.repair_request import RepairRequest
     from repair_bot.database.models.repair_request_staff_edit import RepairRequestStaffEdit
@@ -40,3 +42,7 @@ class User(Base):
     gift_certificates: Mapped[list["GiftCertificate"]] = relationship(
         cascade="all, delete-orphan", foreign_keys="GiftCertificate.owner_id"
     )
+    telegram_access_codes: Mapped[list["TelegramAccessCode"]] = relationship(
+        cascade="all, delete-orphan", foreign_keys="TelegramAccessCode.user_id"
+    )
+    import_batches: Mapped[list["RequestImportBatch"]] = relationship(cascade="all, delete-orphan")

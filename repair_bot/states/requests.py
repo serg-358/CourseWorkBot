@@ -9,4 +9,6 @@ class RequestStates(StatesGroup):
     waiting_photo = State()
     waiting_addition = State()
     waiting_staff_diagnosis = State()
+    waiting_staff_parts = State()
+    waiting_staff_tools = State()
     waiting_staff_price = State()

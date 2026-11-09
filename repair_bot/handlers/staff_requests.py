@@ -24,6 +24,8 @@ from repair_bot.handlers.common import (
     menu_for_user,
 )
 from repair_bot.states import RequestStates
+from repair_bot.database.crud.request_lifecycle import request_photo_id
+from repair_bot.services.staff_assessment import effective_staff_details
 import logging
 from aiogram import Router
 
@@ -75,8 +77,7 @@ async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
             request_id=request.id,
             current_status=request.status,
             has_photo=bool(
-                getattr(request, "ai_assessment", None)
-                and request.ai_assessment.photo_file_id
+                request_photo_id(request)
             ),
             can_edit_assessment=True,
         ),
@@ -99,10 +100,10 @@ async def show_request_photo(callback: CallbackQuery) -> None:
     if actor is None or actor.role not in {"admin", "master"}:
         await callback.answer("🔒 Нет прав для просмотра фото.", show_alert=True)
         return
-    if request is None or request.ai_assessment is None or not request.ai_assessment.photo_file_id:
+    if request is None or not request_photo_id(request):
         await callback.answer("📭 Фото для этой заявки не найдено.", show_alert=True)
         return
-    await callback.message.answer_photo(request.ai_assessment.photo_file_id, caption=f"🖼️ Фото заявки №{request.id}")
+    await callback.message.answer_photo(request_photo_id(request), caption=f"🖼️ Фото заявки №{request.id}")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("request:status:"))
@@ -154,8 +155,7 @@ async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
                 request_id=request.id,
                 current_status=request.status,
                 has_photo=bool(
-                    getattr(request, "ai_assessment", None)
-                    and request.ai_assessment.photo_file_id
+                    request_photo_id(request)
                 ),
             can_edit_assessment=True,
             ),
@@ -196,11 +196,14 @@ async def start_request_staff_edit(callback: CallbackQuery, state: FSMContext) -
         return
 
     await state.clear()
+    parts, tools = effective_staff_details(request)
     await state.update_data(
         request_id=request_id,
         staff_role=user.role,
         screen_chat_id=callback.message.chat.id,
         screen_message_id=callback.message.message_id,
+        staff_parts=parts,
+        staff_tools=tools,
     )
     await state.set_state(RequestStates.waiting_staff_diagnosis)
     await callback.answer()
@@ -243,14 +246,50 @@ async def process_staff_diagnosis(message: Message, state: FSMContext) -> None:
         await message.answer("🔒 Нет прав на исправление заявки.")
         return
     await state.update_data(diagnosis=diagnosis)
-    await state.set_state(RequestStates.waiting_staff_price)
+    await state.set_state(RequestStates.waiting_staff_parts)
     await edit_state_screen(
         message,
         state,
-        "💰 Введите подтверждённую цену для клиента в рублях "
-        "(например, 2500 или 2500,50):",
+        "🧩 Введите детали для проверки. «=» — оставить текущие, «-» — очистить.\n\n"
+        + str(data.get("staff_parts", ""))[:1000],
         reply_markup=dialog_keyboard(menu_for_user(message.from_user.id, user.role)),
     )
+
+
+async def process_staff_detail_field(message: Message, state: FSMContext, field: str) -> None:
+    """Проверяет роль на каждом шаге редактирования деталей/инструментов."""
+    if message.from_user is None:
+        return
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(message.from_user.id))
+    if user is None or user.role not in {"admin", "master"}:
+        await state.clear()
+        await message.answer("🔒 Нет прав для исправления заявки.")
+        return
+    value = (message.text or "").strip()
+    if not value or len(value) > 3000:
+        await edit_state_screen(message, state, "Введите текст до 3000 символов. «=» — оставить, «-» — очистить.", reply_markup=dialog_keyboard(menu_for_user(message.from_user.id, user.role)))
+        return
+    if value != "=":
+        await state.update_data(**{field: "" if value == "-" else value})
+    if field == "staff_parts":
+        data = await state.get_data()
+        await state.set_state(RequestStates.waiting_staff_tools)
+        prompt = "🛠 Введите инструменты. «=» — оставить текущие, «-» — очистить.\n\n" + str(data.get("staff_tools", ""))[:1000]
+    else:
+        await state.set_state(RequestStates.waiting_staff_price)
+        prompt = "💰 Введите подтверждённую цену для клиента в рублях (например, 2500 или 2500,50):"
+    await edit_state_screen(message, state, prompt, reply_markup=dialog_keyboard(menu_for_user(message.from_user.id, user.role)))
+
+
+@router.message(RequestStates.waiting_staff_parts)
+async def process_staff_parts(message: Message, state: FSMContext) -> None:
+    await process_staff_detail_field(message, state, "staff_parts")
+
+
+@router.message(RequestStates.waiting_staff_tools)
+async def process_staff_tools(message: Message, state: FSMContext) -> None:
+    await process_staff_detail_field(message, state, "staff_tools")
 
 
 def parse_client_price(value: str) -> int | None:
@@ -301,6 +340,8 @@ async def process_staff_price(message: Message, state: FSMContext) -> None:
             editor.id,
             diagnosis,
             price_kopecks,
+            parts=data.get("staff_parts"),
+            tools=data.get("staff_tools"),
         )
         role = editor.role
         requests = await get_all_requests(db)
@@ -328,7 +369,7 @@ async def process_staff_price(message: Message, state: FSMContext) -> None:
             request_id=request.id,
             current_status=request.status,
             has_photo=bool(
-                request.ai_assessment and request.ai_assessment.photo_file_id
+                request_photo_id(request)
             ),
             can_edit_assessment=True,
         ),

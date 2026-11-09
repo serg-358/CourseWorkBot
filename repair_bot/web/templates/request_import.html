@@ -1,0 +1,17 @@
+<section class="card">
+<h1>{% if batch %}Проверьте импорт{% else %}Импорт заявок{% endif %}</h1>
+<p>JSON или CSV из экспорта сайта. До 200 заявок и 512 КиБ за раз. Новые владельцы получают роль клиента; существующие роли и профили сохраняются. AI не вызывается, подарочные сертификаты не выдаются.</p>
+{% if batch %}
+<p>К добавлению: {{ rows|length }}. Повторных записей пропущено: {{ skipped }}. Исходные номера сохраняются в истории, новым записям присваиваются местные номера. Предпросмотр действует 15 минут.</p>
+<div class="table-wrap"><table><thead><tr><th>Исходный №</th><th>Владелец</th><th>Описание</th><th>Статус</th><th>Приоритет</th><th>Дата</th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.source_id }}</td><td>{{ row.full_name }}<br>{{ row.phone }}</td><td>{{ row.description[:160] }}</td><td>{{ statuses[row.status] }}</td><td>{{ priorities[row.priority] }}</td><td>{{ row.created_at }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if rows %}<form method="post" action="/admin/import/confirm"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="batch" value="{{ batch.id }}"><button>Подтвердить импорт {{ rows|length }} заявок</button></form>{% endif %}
+{% else %}
+<form method="post" action="/admin/import/preview" id="import-form"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label>Формат<select name="format" id="import-format"><option value="json">JSON</option><option value="csv">CSV (Excel)</option></select></label>
+<label>Файл<input type="file" id="import-file" accept=".json,.csv"></label>
+<label>Содержимое архива<textarea name="payload" id="import-payload" rows="8" required placeholder="Выберите файл или вставьте содержимое"></textarea></label><button>Проверить и показать предпросмотр</button></form>
+<script>document.getElementById('import-file').addEventListener('change', async function(){const f=this.files[0];if(!f)return;if(f.size>524288){alert('Файл больше 512 КиБ');this.value='';return;}document.getElementById('import-payload').value=await f.text();document.getElementById('import-format').value=f.name.toLowerCase().endsWith('.csv')?'csv':'json';});</script>
+{% endif %}
+<p><a href="/admin/requests">← К заявкам</a></p></section>

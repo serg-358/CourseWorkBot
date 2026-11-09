@@ -14,7 +14,7 @@ async def issue_for_request(db: AsyncSession, request_id: int) -> GiftCertificat
     """Выдаёт сертификат только за завершённую и оценённую мастером заявку."""
     from repair_bot.database.crud.requests import get_repair_request
     item = await get_repair_request(db, request_id)
-    if item is None or item.status != "completed" or not item.staff_edits:
+    if item is None or item.status != "completed" or not item.staff_edits or (item.lifecycle and item.lifecycle.imported):
         return None
     existing = await db.scalar(select(GiftCertificate).where(GiftCertificate.source_request_id == item.id))
     if existing:
