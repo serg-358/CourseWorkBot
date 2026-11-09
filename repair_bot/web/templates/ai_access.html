@@ -1,6 +1,6 @@
 <section class="card"><h1>AI-доступ пользователей</h1>
 <p>Укажите точное число оставшихся диагностик. Например, 5 означает ровно 5 попыток, 0 закрывает доступ. Это замена остатка, а не прибавление. Бесплатная первая попытка уже включена в счётчик.</p>
-<p>Повторная диагностика стоит 30 ₽; оплату проверяет администратор вручную. Мастера и администраторы пользуются AI без лимита по роли. Счётчики видны для всех пользователей.</p>
+<p>Первая диагностика бесплатная. Дополнительные попытки выдаёт администратор; приём оплаты отключён. Мастера и администраторы пользуются AI без лимита по роли. Счётчики видны для всех пользователей.</p>
 <form method="get" action="/admin/ai" class="user-search"><label for="user-search">Найти пользователя</label><div><input id="user-search" type="search" name="q" value="{{ query }}" maxlength="100" placeholder="Имя, телефон или Telegram ID"><button>Найти</button><a href="/admin/ai">Сбросить</a></div></form>
 <div class="table-wrap"><table class="ai-users-table"><thead><tr><th>Пользователь</th><th>Роль</th><th>Счётчик AI</th></tr></thead><tbody>{% for row in rows %}
 <tr id="user-{{ row.id }}"><td>{{ row.name }}<br>{{ row.phone }}</td><td>{{ {'admin':'Администратор','master':'Мастер','client':'Клиент'}.get(row.role, row.role) }}</td><td>{% include 'ai_counter.html' %}</td></tr>{% else %}<tr><td colspan="3">По вашему запросу пользователи не найдены.</td></tr>{% endfor %}</tbody></table></div>

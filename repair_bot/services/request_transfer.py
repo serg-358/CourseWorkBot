@@ -1,5 +1,7 @@
 """Версионированный перенос заявок: проверка до записи, CSV безопасен для Excel."""
 
+from repair_bot.services.request_priority import selected_priority
+
 import csv
 import hashlib
 import io
@@ -24,7 +26,7 @@ def export_row(item, address: str = "") -> dict:
     from repair_bot.database.crud.request_lifecycle import request_photo_id
     a = item.ai_assessment
     row = dict(source_id=item.id, telegram_id=item.user.telegram_id, full_name=item.user.full_name,
-        phone=item.user.phone, description=item.description, status=item.status, priority=item.priority,
+        phone=item.user.phone, description=item.description, status=item.status, priority=selected_priority(item),
         created_at=item.created_at.isoformat(), updated_at=item.updated_at.isoformat(), diagnosis=item.diagnosis or "",
         address=address, photo_file_id=request_photo_id(item) or "",
         deleted_at=item.lifecycle.deleted_at.isoformat() if item.lifecycle and item.lifecycle.deleted_at else "",

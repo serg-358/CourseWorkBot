@@ -64,7 +64,7 @@ def test_ai_assessment_text_is_split_into_readable_blocks():
     assert "<b>🔎 Возможные причины</b>\nСбой памяти\n\n" in client_text
     assert "<b>🛡 Безопасные рекомендации</b>" in client_text
     assert "<b>💰 Стоимость ремонта</b>\n2 500 ₽" in client_text
-    assert "Предварительный технический приоритет ИИ" in client_text
+    assert "Предварительный технический приоритет ИИ" not in client_text
     assert "Доплата за срочность: 0 ₽" in client_text
     assert "Итого предварительно: 2 500 ₽" in client_text
     assert "<b>🔎 Предварительная причина</b>\nПроверить модули памяти.\n\n" in master_text
@@ -738,3 +738,22 @@ async def test_registration_phone_prompt_follows_name_and_has_only_cancel():
     state.set_state.assert_awaited_once_with(registration.RegistrationStates.waiting_phone)
     state.update_data.assert_any_await(screen_chat_id=10, screen_message_id=22)
     message.bot.edit_message_reply_markup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_registration_success_is_sent_after_phone(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            return None
+    monkeypatch.setattr(registration, "SessionLocal", Session)
+    monkeypatch.setattr(registration, "get_user_by_telegram_id", AsyncMock(return_value=SimpleNamespace(role="client")))
+    message = SimpleNamespace(text="89999999999", from_user=SimpleNamespace(id=123),
+        answer=AsyncMock(), bot=SimpleNamespace(edit_message_reply_markup=AsyncMock()))
+    state = SimpleNamespace(get_data=AsyncMock(return_value={"full_name": "Иван", "screen_chat_id":123, "screen_message_id":10}), clear=AsyncMock())
+    await registration.process_phone(message, state)
+    message.answer.assert_awaited_once()
+    assert "Регистрация успешна" in message.answer.call_args.args[0]
+    message.bot.edit_message_reply_markup.assert_awaited_once()
+    state.clear.assert_awaited_once()

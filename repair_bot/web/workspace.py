@@ -1,5 +1,7 @@
 """Представления рабочих разделов и сортировка заявок без изменения прав."""
 
+from repair_bot.services.request_priority import selected_priority
+
 import html
 from datetime import date
 from urllib.parse import urlencode
@@ -10,7 +12,7 @@ from repair_bot.services.pricing.catalog import CATALOG, calculate_cost
 from repair_bot.services.pricing.request_total import final_total
 
 STATUSES = {"new": "Новая", "in_progress": "В работе", "completed": "Завершена", "cancelled": "Отменена"}
-PRIORITIES = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
+PRIORITIES = {"low": "Обычная", "medium": "Срочная", "high": "Критическая"}
 
 
 def service_catalog() -> list[dict[str, str]]:
@@ -48,7 +50,7 @@ def sorted_requests(items: list[RepairRequest], params: dict[str, str]) -> list[
         result = [item for item in result if item.status == status]
     priority = params.get("priority", "")
     if priority in PRIORITIES:
-        result = [item for item in result if item.priority == priority]
+        result = [item for item in result if selected_priority(item) == priority]
     for field, lower in (("from", True), ("to", False)):
         try:
             boundary = date.fromisoformat(params.get(field, ""))
@@ -63,7 +65,7 @@ def sorted_requests(items: list[RepairRequest], params: dict[str, str]) -> list[
         "id": lambda item: item.id,
         "date": lambda item: item.created_at,
         "status": lambda item: list(STATUSES).index(item.status) if item.status in STATUSES else 99,
-        "priority": lambda item: {"low": 0, "medium": 1, "high": 2}.get(item.priority, 1),
+        "priority": lambda item: {"low": 0, "medium": 1, "high": 2}.get(selected_priority(item), 1),
         "price": request_price,
     }
     getter = getters.get(key, getters["date"])
@@ -105,7 +107,7 @@ def requests_table(items: list[RepairRequest], staff: bool = False, view: str = 
         owner = f"<td>{html.escape(item.user.full_name)}</td>" if staff else ""
         price = request_price(item)
         price_text = format_rubles(price) if price is not None else "Уточняется"
-        rows.append(f"<tr><td><a href='{detail}'>№{item.id}</a></td>{owner}<td><a href='{detail}'>{html.escape(item.description[:100])}</a></td><td>{STATUSES.get(item.status, 'Неизвестен')}</td><td>{PRIORITIES.get(item.priority, 'Средний')}</td><td>{item.created_at:%d.%m.%Y}</td><td class='price-cell'>{price_text}</td><td><a href='{detail}'>Открыть →</a></td></tr>")
+        rows.append(f"<tr><td><a href='{detail}'>№{item.id}</a></td>{owner}<td><a href='{detail}'>{html.escape(item.description[:100])}</a></td><td>{STATUSES.get(item.status, 'Неизвестен')}</td><td>{PRIORITIES.get(selected_priority(item), 'Средний')}</td><td>{item.created_at:%d.%m.%Y}</td><td class='price-cell'>{price_text}</td><td><a href='{detail}'>Открыть →</a></td></tr>")
     headers = heading("Номер", "id") + ("<th>Клиент</th>" if staff else "") + "<th>Описание</th>" + heading("Статус", "status") + heading("Приоритет", "priority") + heading("Создана", "date") + heading("Предварительный итог", "price") + "<th></th>"
     table = f"<div class='table-wrap'><table><thead><tr>{headers}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>" if rows else "<p class='card'>По выбранным условиям заявок нет.</p>"
     return filters + f"<p class='muted'>Найдено: {len(filtered)} · Цена включает выбранную доплату за срочность.</p>" + table

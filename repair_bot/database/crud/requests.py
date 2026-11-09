@@ -1,5 +1,7 @@
 """CRUD-операции для заявок на ремонт."""
 
+from repair_bot.services.request_priority import PRIORITY_BY_URGENCY
+
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -42,7 +44,7 @@ async def create_repair_request(
     tariff = await get_urgency_tariff(db, urgency_code)
     if tariff is None:
         raise ValueError("Выбранный тариф срочности недоступен.")
-    request = RepairRequest(user_id=user_id, description=description)
+    request = RepairRequest(user_id=user_id, description=description, priority=PRIORITY_BY_URGENCY[urgency_code])
     if photo_file_id:
         request.lifecycle = RequestLifecycle(photo_file_id=photo_file_id)
     db.add(request)
@@ -158,11 +160,10 @@ async def save_ai_assessment(
     estimated_cost_kopecks: int | None,
     client_price_kopecks: int | None,
 ) -> RepairRequestAiAssessment | None:
-    """Сохраняет AI-оценку и согласованный с ней приоритет заявки."""
+    """Сохраняет AI-оценку; старый аргумент priority не меняет выбор клиента."""
     request = await db.get(RepairRequest, request_id)
     if request is None:
         return None
-    request.priority = priority
     assessment = RepairRequestAiAssessment(
         request_id=request_id,
         photo_file_id=photo_file_id,

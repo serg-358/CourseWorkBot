@@ -1,5 +1,7 @@
 """Общие проверки, форматирование и функции экранов."""
 
+from repair_bot.services.request_priority import selected_priority
+
 import logging
 import html
 import os
@@ -105,11 +107,11 @@ def admin_request_text(request: RepairRequest) -> str:
         "completed": "✅ Завершена",
         "cancelled": "❌ Отменена",
     }
-    priority_labels = {"low": "🟢 Низкий", "medium": "🟡 Средний", "high": "🔴 Высокий"}
+    priority_labels = {"low": "Обычная", "medium": "Срочная", "high": "Критическая"}
     text = (
         f"🧾 <b>Заявка №{request.id}</b>\n👤 Пользователь: {html.escape(request.user.full_name)}\n"
         f"📱 Телефон: {html.escape(request.user.phone)}\n"
-        f"🎯 Приоритет: {priority_labels.get(request.priority, request.priority)}\n"
+        f"🎯 Приоритет: {priority_labels.get(selected_priority(request), selected_priority(request))}\n"
         f"📌 Статус: {status_labels.get(request.status, request.status)}\n\n"
         f"{html.escape(request_description_preview(request.description)[-700:])}"
     )
@@ -123,10 +125,8 @@ def admin_request_text(request: RepairRequest) -> str:
     else:
         cost = format_rubles(assessment.estimated_cost_kopecks)
         price = format_rubles(assessment.client_price_kopecks)
-        urgency = {"low": "Плановая", "medium": "В ближайшее время", "high": "Срочная"}.get(request.priority, request.priority)
         text += (
             "\n\n🤖 <b>Исходная предварительная оценка ИИ</b>\n\n"
-            f"<b>⏱ Технический приоритет</b>\n{urgency}\n\n"
             f"<b>🔎 Предварительная причина</b>\n{html.escape(assessment.master_diagnosis[:350])}\n\n"
             f"<b>Исходные детали ИИ</b>\n{html.escape(assessment.parts[:150])}\n\n"
             f"<b>Исходные инструменты ИИ</b>\n{html.escape(assessment.tools[:150])}\n\n"
@@ -163,12 +163,9 @@ def client_request_text(request: RepairRequest) -> str:
         "completed": "✅ Завершена",
         "cancelled": "❌ Отменена",
     }
-    priority_labels = {"low": "🟢 Низкий", "medium": "🟡 Средний", "high": "🔴 Высокий"}
     text = (
         f"🧾 <b>Заявка №{request.id}</b>\n"
-        f"📌 Статус: {status_labels.get(request.status, request.status)}\n"
-        f"🤖 Предварительный технический приоритет ИИ: "
-        f"{priority_labels.get(request.priority, request.priority)}\n\n"
+        f"📌 Статус: {status_labels.get(request.status, request.status)}\n\n"
         f"{html.escape(request_description_preview(request.description))}"
     )
     assessment = getattr(request, "ai_assessment", None)

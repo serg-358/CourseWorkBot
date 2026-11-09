@@ -1,5 +1,7 @@
 """Веб-кабинет с отдельным доступом для каждой роли."""
 
+from repair_bot.services.request_priority import selected_priority
+
 from io import BytesIO
 
 import qrcode
@@ -90,6 +92,7 @@ SITE_TEXT_DEFAULTS = {
 WEB_DIRECTORY = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
 templates.env.globals["money"] = format_rubles
+templates.env.globals["css_version"] = hashlib.sha256((WEB_DIRECTORY / "static/site.css").read_bytes()).hexdigest()[:12]
 
 
 def create_app() -> FastAPI:
@@ -622,7 +625,7 @@ def create_app() -> FastAPI:
             if item.lifecycle and item.lifecycle.imported:
                 content += "<p class='muted'>Импортированная заявка: исходные данные сохранены, автоматическая выдача сертификатов отключена.</p>"
             if not deleted and item.status in {"new", "in_progress"} and not item.ai_assessment and not (item.lifecycle and item.lifecycle.imported):
-                content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатно, последующие — 30 ₽ после подтверждения оплаты администратором. При технической ошибке обратитесь за компенсацией.</p><button>Выполнить доступную AI-диагностику</button></form>"
+                content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатна. Онлайн-оплата пока не подключена; дополнительный доступ выдаёт администратор. При технической ошибке обратитесь через раздел «Обратная связь».</p><button>Выполнить доступную AI-диагностику</button></form>"
             if not deleted and view in {"master", "admin"}:
                 content += staff_request_form(item, csrf_token(request))
             if not deleted and item.status in {"new", "in_progress"} and not request_photo_id(item):
@@ -818,11 +821,11 @@ async def client_panel(
     )
     address_value = html.escape(account.address or "", quote=True)
     create_form = (
-        "<section class='card'><h2>Создать заявку</h2><p>Первая AI-диагностика бесплатная, последующие — 30 ₽. Без AI-доступа заявка всё равно передаётся мастеру. Оплату проверяет администратор.</p><form method='post' action='/requests/create' enctype='multipart/form-data' data-request-form>"
+        "<section class='card'><h2>Создать заявку</h2><p>Первая AI-диагностика бесплатная. Онлайн-оплата пока не подключена. Без AI-доступа заявка всё равно передаётся мастеру.</p><form method='post' action='/requests/create' enctype='multipart/form-data' data-request-form>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         "<label>Описание проблемы<textarea name='description' minlength='10' maxlength='4000' required></textarea></label>"
         "<label>Фотография (необязательно)<input type='file' name='photo' accept='image/jpeg,image/png,image/webp'></label><p class='muted'>JPG, PNG или WebP до 5 МБ. Мастер увидит фото даже без AI-оценки.</p>"
-        f"<label>Срочность<select name='urgency'>{tariff_options}</select></label>"
+        f"<label>Приоритет обслуживания (выбираете вы)<select name='urgency'>{tariff_options}</select></label>"
         f"<label>Адрес выезда (необязательно)<input name='address' maxlength='500' value='{address_value}'></label>"
         f"<p class='muted'>{html.escape(texts['service_note'])}</p><button>Отправить заявку</button></form></section>"
     )
@@ -868,8 +871,8 @@ def dashboard_content(request: Request, user: User, role: str, items: list[Repai
     for item in items:
         price = request_price(item)
         rows.append({"id": item.id, "description": item.description[:140], "status": item.status,
-                     "status_label": STATUSES.get(item.status, "Неизвестен"), "priority": item.priority,
-                     "priority_label": PRIORITIES.get(item.priority, "Средний"),
+                     "status_label": STATUSES.get(item.status, "Неизвестен"), "priority": selected_priority(item),
+                     "priority_label": PRIORITIES.get(selected_priority(item), "Средний"),
                      "date": item.created_at.strftime("%d.%m.%Y"),
                      "price": format_rubles(price) if price is not None else "Уточняется",
                      "owner": item.user.full_name if role != "client" else "",

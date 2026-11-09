@@ -29,7 +29,6 @@ from repair_bot.handlers.common import (
     menu_for_user,
     normalize_phone,
     role_for_telegram_id,
-    safe_edit_message,
     show_start_screen,
 )
 import logging
@@ -378,18 +377,17 @@ async def process_phone(message: Message, state: FSMContext) -> None:
         "admin": "✅ Регистрация успешна. Вы вошли в панель администратора.",
     }
     if data.get("screen_message_id"):
-        await safe_edit_message(
-            message.bot,
-            data["screen_chat_id"],
-            data["screen_message_id"],
-            registration_messages.get(user.role, "✅ Регистрация успешна"),
-            reply_markup=menu_for_user(message.from_user.id, user.role),
-        )
-    else:
-        await message.answer(
-            registration_messages.get(user.role, "✅ Регистрация успешна"),
-            reply_markup=menu_for_user(message.from_user.id, user.role),
-        )
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=data["screen_chat_id"], message_id=data["screen_message_id"],
+                reply_markup=None,
+            )
+        except TelegramAPIError:
+            logger.debug("Не удалось убрать кнопку завершённой регистрации")
+    await message.answer(
+        registration_messages.get(user.role, "✅ Регистрация успешна"),
+        reply_markup=menu_for_user(message.from_user.id, user.role),
+    )
     await state.clear()
 
 @router.message(RegistrationStates.waiting_phone)

@@ -174,7 +174,7 @@ async def test_ai_assessment_is_saved_with_request_and_removed_by_cascade(db_ses
     loaded = await get_repair_request(db_session, request.id)
     assert assessment is not None
     assert loaded is not None
-    assert loaded.priority == "high"
+    assert loaded.priority == "low"  # AI не меняет обычную срочность клиента.
     assert loaded.ai_assessment is not None
     assert loaded.ai_assessment.photo_file_id == "telegram-photo-id"
 
@@ -188,3 +188,15 @@ def test_catalog_cost_is_deterministic_and_unknown_item_has_no_price():
     assert cost == 300000
     assert price == 345000
     assert calculate_cost(["missing"])[1:] == (None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("urgency", "priority"), [("ordinary", "low"), ("urgent", "medium"), ("critical", "high")])
+async def test_client_selects_priority_from_urgency(db_session, urgency, priority):
+    from repair_bot.services.request_priority import selected_priority
+    user = await create_user(db_session, "123456", "Клиент", "+79999999999")
+    item = await create_repair_request(db_session, user.id, "Проверить компьютер", urgency)
+    assert item.priority == priority
+    loaded = await get_repair_request(db_session, item.id)
+    loaded.priority = "high" if priority == "low" else "low"
+    assert selected_priority(loaded) == priority  # Старое значение AI не влияет на выбранную срочность.
