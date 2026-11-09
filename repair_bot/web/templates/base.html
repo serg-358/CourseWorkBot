@@ -70,6 +70,27 @@
         }
       });
       document.querySelectorAll('[data-request-form]').forEach((form) => {
+        const input = form.querySelector('input[type="file"][name="photo"]');
+        if (input) {
+          const preview = document.createElement('img');
+          preview.className = 'request-photo';
+          preview.alt = 'Выбранная фотография';
+          preview.hidden = true;
+          input.closest('label').after(preview);
+          let previewUrl;
+          input.addEventListener('change', () => {
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            preview.hidden = true;
+            const file = input.files[0];
+            input.setCustomValidity(file && file.size > 5 * 1024 * 1024 ? 'Фотография должна быть не больше 5 МБ.' : '');
+            if (file && input.validity.valid) {
+              previewUrl = URL.createObjectURL(file);
+              preview.src = previewUrl;
+              preview.hidden = false;
+            }
+            input.reportValidity();
+          });
+        }
         form.addEventListener('submit', (event) => {
           if (form.dataset.sending) { event.preventDefault(); return; }
           form.dataset.sending = '1';

@@ -49,6 +49,7 @@ coverage.xml
 *.py.cover
 *.lcov
 .hypothesis/
+request_photos/
 .pytest_cache/
 cover/
 

@@ -8,7 +8,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import select
 from repair_bot.database.models import AiCreditGrant, RequestAddress, User
-from repair_bot.database.crud.ai_access import get_wallet, grant_analysis
+from repair_bot.database.crud.ai_access import get_wallet, grant_analysis, available_analyses, set_analysis_balance
 from repair_bot.database.crud.request_lifecycle import move_to_trash, request_photo_id
 from repair_bot.database.crud.request_transfer import preview_import, confirm_import
 from repair_bot.database.crud.requests import get_all_requests, get_repair_request
@@ -116,10 +116,30 @@ def register_admin_tools(app, web) -> None:
             rows = []
             for user in users:
                 wallet = await get_wallet(db, user)
-                rows.append({"id": user.id, "name": user.full_name, "phone": user.phone, "role": user.role, "free": not wallet.free_used, "credits": wallet.credits, "reference": secrets.token_urlsafe(24)})
+                rows.append({"id": user.id, "name": user.full_name, "phone": user.phone, "role": user.role, "remaining": available_analyses(wallet), "reference": secrets.token_urlsafe(24)})
             await db.commit()
             grants = (await db.scalars(select(AiCreditGrant).order_by(AiCreditGrant.id.desc()).limit(50))).all()
         return web.render_page(request, "Доступ к AI", web.templates.get_template("ai_access.html").render(rows=rows, grants=grants, names={u.telegram_id: u.full_name for u in users}, csrf=web.csrf_token(request)))
+
+    @app.post("/admin/ai/set")
+    async def set_access(request: Request):
+        form = await web.read_form(request)
+        if not web.verify_csrf(request, form):
+            return web.forbidden_page(request)
+        async with web.SessionLocal() as db:
+            _, actor = await web.identity(request, db)
+            if not actor or actor.role != "admin":
+                return web.forbidden_page(request)
+            try:
+                if not re.fullmatch(r"[0-9]{1,5}", form.get("count", "")) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", form.get("reference", "")):
+                    raise ValueError("Укажите целое число попыток от 0 до 10000.")
+                target = await db.get(User, int(form.get("user_id", "")))
+                if target is None:
+                    raise ValueError("Пользователь не найден.")
+                await set_analysis_balance(db, actor, target, int(form["count"]), form["reference"])
+            except ValueError as exc:
+                return web.error_page(request, str(exc), "/admin/ai")
+        return RedirectResponse("/admin/ai?saved=1", status_code=303)
 
     @app.post("/admin/ai/grant")
     async def grant_access(request: Request):

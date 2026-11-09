@@ -1,0 +1,8 @@
+<form method="post" action="/admin/ai/set" class="ai-counter-form">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="reference" value="{{ row.reference }}">
+  <input type="hidden" name="user_id" value="{{ row.id }}">
+  <label>Осталось попыток<input name="count" type="number" min="0" max="10000" step="1" value="{{ row.remaining }}" required aria-label="Количество AI-попыток для {{ row.name }}"></label>
+  <button>Установить</button>
+  {% if row.role in ['admin', 'master'] %}<small class="muted">Сейчас доступ безлимитный по роли. Счётчик будет действовать при клиентской роли.</small>{% endif %}
+</form>

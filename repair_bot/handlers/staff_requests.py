@@ -25,6 +25,8 @@ from repair_bot.handlers.common import (
 )
 from repair_bot.states import RequestStates
 from repair_bot.database.crud.request_lifecycle import request_photo_id
+from repair_bot.services.request_photos import read_web_photo
+from aiogram.types import BufferedInputFile
 from repair_bot.services.staff_assessment import effective_staff_details
 import logging
 from aiogram import Router
@@ -103,7 +105,15 @@ async def show_request_photo(callback: CallbackQuery) -> None:
     if request is None or not request_photo_id(request):
         await callback.answer("📭 Фото для этой заявки не найдено.", show_alert=True)
         return
-    await callback.message.answer_photo(request_photo_id(request), caption=f"🖼️ Фото заявки №{request.id}")
+    reference = request_photo_id(request)
+    photo = reference
+    if reference.startswith("web:"):
+        try:
+            photo = BufferedInputFile(await read_web_photo(reference), filename="repair-photo.jpg")
+        except (OSError, ValueError):
+            await callback.answer("Фото временно недоступно.", show_alert=True)
+            return
+    await callback.message.answer_photo(photo, caption=f"🖼️ Фото заявки №{request.id}")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("request:status:"))

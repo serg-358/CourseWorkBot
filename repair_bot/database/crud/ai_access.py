@@ -9,6 +9,32 @@ from repair_bot.database.models import AiWallet, AiUsage, AiCreditGrant, RepairR
 AI_PRICE_KOPECKS = 3000
 
 
+def available_analyses(wallet: AiWallet) -> int:
+    """Единый видимый остаток, включая ещё не использованную бесплатную попытку."""
+    return wallet.credits + int(not wallet.free_used)
+
+
+async def set_analysis_balance(db: AsyncSession, actor: User, target: User, count: int, reference: str) -> None:
+    """Устанавливает точный остаток, а не добавляет к нему скрытую бесплатную попытку."""
+    if actor.role != "admin" or not 0 <= count <= 10000:
+        raise ValueError("Укажите целое количество от 0 до 10000.")
+    if await db.scalar(select(AiCreditGrant.id).where(AiCreditGrant.reference == reference)):
+        return
+    await get_wallet(db, target)
+    try:
+        db.add(AiCreditGrant(telegram_id=target.telegram_id, actor_name=actor.full_name, credits=count, amount_kopecks=0, reason="balance_set", reference=reference))
+        await db.flush()
+        await db.execute(update(AiWallet).where(AiWallet.telegram_id == target.telegram_id).values(credits=count, free_used=True))
+        # Завершение старой незапущенной/неудачной попытки не увеличит новый остаток.
+        for kind in ("free", "paid"):
+            await db.execute(update(AiUsage).where(AiUsage.actor_telegram_id == target.telegram_id, AiUsage.state == "reserved", AiUsage.kind == kind).values(kind="adjusted_" + kind))
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        if not await db.scalar(select(AiCreditGrant.id).where(AiCreditGrant.reference == reference)):
+            raise
+
+
 async def get_wallet(db: AsyncSession, user: User) -> AiWallet:
     """Старые успешные диагностики засчитываются в бесплатный лимит."""
     wallet = await db.get(AiWallet, user.telegram_id)

@@ -36,13 +36,15 @@ async def get_request_status_counts(db: AsyncSession) -> dict[str, int]:
 
 
 async def create_repair_request(
-    db: AsyncSession, user_id: int, description: str, urgency_code: str = "ordinary"
+    db: AsyncSession, user_id: int, description: str, urgency_code: str = "ordinary", *, photo_file_id: str | None = None
 ) -> RepairRequest:
     """Создаёт заявку и сохраняет снимок выбранной доплаты за срочность."""
     tariff = await get_urgency_tariff(db, urgency_code)
     if tariff is None:
         raise ValueError("Выбранный тариф срочности недоступен.")
     request = RepairRequest(user_id=user_id, description=description)
+    if photo_file_id:
+        request.lifecycle = RequestLifecycle(photo_file_id=photo_file_id)
     db.add(request)
     await db.flush()
     db.add(

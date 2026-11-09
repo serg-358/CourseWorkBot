@@ -13,3 +13,4 @@ logs/
 .git/
 .pytest_cache/
 tests/
+**/request_photos/

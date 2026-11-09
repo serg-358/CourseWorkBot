@@ -4,6 +4,7 @@ from io import BytesIO
 
 import qrcode
 import hashlib
+import asyncio
 import html
 import hmac
 import logging
@@ -68,6 +69,9 @@ from repair_bot.handlers.staff_requests import parse_client_price
 from repair_bot.services.ai.diagnostics import analyze_repair_request
 from repair_bot.services.ai.budget import analyze_with_budget
 from repair_bot.database.crud.request_lifecycle import request_photo_id
+from repair_bot.database.crud.ai_access import get_wallet, available_analyses
+from repair_bot.services.request_photos import read_photo_form, normalize_photo, save_web_photo, read_web_photo, discard_web_photo
+from repair_bot.database.crud.request_lifecycle import set_request_photo
 from repair_bot.web.admin_tools import register_admin_tools, transfer_controls, request_tabs, trash_control
 
 from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES, service_catalog
@@ -239,6 +243,11 @@ def create_app() -> FastAPI:
             tab = request.query_params.get("tab", "overview")
             if tab == "profile":
                 content = profile_content(account, user)
+                if user:
+                    wallet = await get_wallet(db, user)
+                    await db.commit()
+                    balance = "Безлимит по роли сотрудника" if user.role in {"admin", "master"} else str(available_analyses(wallet))
+                    content += f"<section class='card'><h2>AI-диагностика</h2><p>Осталось попыток: {balance}</p></section>"
             elif tab == "certificates" and user is not None:
                 gifts = await list_certificates(db, user.id)
                 items = await get_user_requests(db, user.id)
@@ -325,13 +334,16 @@ def create_app() -> FastAPI:
 
     @app.post("/requests/create")
     async def create_request_from_site(request: Request) -> Response:
-        form = await read_form(request)
-        if not verify_csrf(request, form):
-            return error_page(request, "Сессия формы устарела. Обновите страницу.", "/panel")
         async with SessionLocal() as db:
             account, user = await identity(request, db)
             if account is None or user is None or user.role not in {"client", "admin"}:
                 return forbidden_page(request)
+            try:
+                form, photo = await read_photo_form(request)
+            except ValueError as exc:
+                return error_page(request, str(exc), "/request/new")
+            if not verify_csrf(request, form):
+                return error_page(request, "Сессия формы устарела. Обновите страницу.", "/panel")
             description = form.get("description", "").strip()
             address = form.get("address", "").strip()
             if not 10 <= len(description) <= 4000:
@@ -341,15 +353,25 @@ def create_app() -> FastAPI:
             tariff = await get_urgency_tariff(db, form.get("urgency", "ordinary"))
             if tariff is None:
                 return error_page(request, "Выбранный тариф недоступен.", "/panel")
-            repair_request = await create_repair_request(
-                db, user.id, description, tariff.code
-            )
+            photo_ref = None
+            if photo is not None:
+                try:
+                    photo = await asyncio.to_thread(normalize_photo, photo)
+                except ValueError as exc:
+                    return error_page(request, str(exc), "/request/new")
+                photo_ref = await save_web_photo(photo)
+            try:
+                repair_request = await create_repair_request(db, user.id, description, tariff.code, photo_file_id=photo_ref)
+            except Exception:
+                if photo_ref:
+                    await discard_web_photo(photo_ref)
+                raise
             if address:
                 db.add(RequestAddress(request_id=repair_request.id, address=address))
                 account.address = address
                 await db.commit()
             actor_id = user.id
-        await analyze_with_budget(SessionLocal, repair_request.id, actor_id, analyze_repair_request, description)
+        await analyze_with_budget(SessionLocal, repair_request.id, actor_id, analyze_repair_request, description, photo, photo_ref)
         return RedirectResponse(f"/requests/{repair_request.id}?created=1", status_code=303)
 
     @app.post("/staff/requests/{request_id}/update")
@@ -418,6 +440,10 @@ def create_app() -> FastAPI:
             if account is None or actor is None or actor.role != "admin":
                 return forbidden_page(request)
             users = await get_all_users(db)
+            counters = {}
+            for person in users:
+                counters[person.id] = available_analyses(await get_wallet(db, person))
+            await db.commit()
             selected_role = request.query_params.get("role", "")
             if selected_role in ROLE_NAMES:
                 users = [item for item in users if item.role == selected_role]
@@ -428,17 +454,16 @@ def create_app() -> FastAPI:
                 f"<option value='{role}' {'selected' if item.role == role else ''}>{name}</option>"
                 for role, name in ROLE_NAMES.items()
             )
-            rows.append(
-                "<tr>"
-                f"<td>{html.escape(item.full_name)}</td><td>{html.escape(item.phone)}</td>"
-                f"<td>{html.escape(item.telegram_id)}</td><td><form method='post' action='/admin/users/{item.id}/role'>"
-                f"<input type='hidden' name='csrf' value='{csrf}'><select name='role'>{role_options}</select>"
-                "<button>Сохранить</button></form></td></tr>"
+            configured = configured_role_for_telegram_id(int(item.telegram_id))
+            role_control = f"<span class='dashboard-notice'>🔒 {ROLE_NAMES[configured]} — роль закреплена на сервере</span>" if configured else (
+                f"<form method='post' action='/admin/users/{item.id}/role'><input type='hidden' name='csrf' value='{csrf}'><select name='role'>{role_options}</select><button>Сохранить роль</button></form>"
             )
+            counter = templates.get_template("ai_counter.html").render(csrf=csrf, row={"id": item.id, "name": item.full_name, "role": item.role, "remaining": counters[item.id], "reference": secrets.token_urlsafe(24)})
+            rows.append(f"<tr><td>{html.escape(item.full_name)}</td><td>{html.escape(item.phone)}</td><td>{html.escape(item.telegram_id)}</td><td>{role_control}</td><td>{counter}</td></tr>")
         content = (
             "<section class='card'><h2>Пользователи и роли</h2><p>Роль хранится на сервере и проверяется при каждом запросе.</p>"
             "<nav class='user-role-tabs' aria-label='Категории пользователей'><a href='/admin/users'>Все</a><a href='/admin/users?role=admin'>Администраторы</a><a href='/admin/users?role=master'>Мастера</a><a href='/admin/users?role=client'>Клиенты</a></nav>"
-            "<div class='table-wrap'><table><thead><tr><th>Имя</th><th>Телефон</th><th>Telegram ID</th><th>Роль</th></tr></thead>"
+            "<div class='table-wrap'><table><thead><tr><th>Имя</th><th>Телефон</th><th>Telegram ID</th><th>Роль</th><th>AI-попытки</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div></section>"
         )
         return render_page(request, "Управление ролями", content)
@@ -645,7 +670,35 @@ def create_app() -> FastAPI:
                 content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатно, последующие — 30 ₽ после подтверждения оплаты администратором. При технической ошибке обратитесь за компенсацией.</p><button>Выполнить доступную AI-диагностику</button></form>"
             if not deleted and view in {"master", "admin"}:
                 content += staff_request_form(item, csrf_token(request))
+            if not deleted and item.status in {"new", "in_progress"} and not request_photo_id(item):
+                content += f"<form method='post' enctype='multipart/form-data' action='/requests/{item.id}/photo' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><h2>Добавить фотографию</h2><label>Фото неисправности<input name='photo' type='file' accept='image/jpeg,image/png,image/webp' required></label><p>JPG, PNG или WebP до 5 МБ. Фото получит мастер; готовая AI-оценка не перезаписывается.</p><button>Сохранить фото</button></form>"
             return render_page(request, f"Заявка №{item.id}", content + "</article>")
+
+    @app.post("/requests/{request_id}/photo")
+    async def attach_request_photo(request: Request, request_id: int) -> Response:
+        async with SessionLocal() as db:
+            _, user = await identity(request, db)
+            item = await get_repair_request(db, request_id)
+            if not can_view_request(request, user, item):
+                return forbidden_page(request)
+            if item.status not in {"new", "in_progress"} or request_photo_id(item):
+                return error_page(request, "Фото уже приложено или заявка закрыта.", f"/requests/{request_id}")
+            try:
+                form, photo = await read_photo_form(request)
+                if not verify_csrf(request, form):
+                    return forbidden_page(request)
+                if photo is None:
+                    raise ValueError("Выберите фотографию.")
+                photo = await asyncio.to_thread(normalize_photo, photo)
+            except ValueError as exc:
+                return error_page(request, str(exc), f"/requests/{request_id}")
+            reference = await save_web_photo(photo)
+            try:
+                await set_request_photo(db, request_id, reference)
+            except Exception:
+                await discard_web_photo(reference)
+                raise
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
 
     @app.get("/requests/{request_id}/photo")
     async def request_photo(request: Request, request_id: int) -> Response:
@@ -659,7 +712,7 @@ def create_app() -> FastAPI:
             return Response(status_code=404)
         try:
             data = await download_request_photo(file_id)
-        except (TelegramAPIError, ValueError):
+        except (TelegramAPIError, ValueError, OSError):
             return Response("Фото временно недоступно.", status_code=502)
         return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
@@ -727,6 +780,8 @@ def can_view_request(request: Request, user: User | None, item: RepairRequest | 
 
 async def download_request_photo(file_id: str) -> bytes:
     """Получает фото через сервер, не раскрывая Telegram-токен браузеру."""
+    if file_id.startswith("web:"):
+        return await read_web_photo(file_id)
     async with Bot(os.getenv("BOT_TOKEN", "")) as bot:
         output = BytesIO()
         await bot.download(file_id, destination=output)
@@ -808,17 +863,22 @@ async def client_panel(
     )
     address_value = html.escape(account.address or "", quote=True)
     create_form = (
-        "<section class='card'><h2>Создать заявку</h2><p>Первая AI-диагностика бесплатная, последующие — 30 ₽. Без AI-доступа заявка всё равно передаётся мастеру. Оплату проверяет администратор.</p><form method='post' action='/requests/create' data-request-form>"
+        "<section class='card'><h2>Создать заявку</h2><p>Первая AI-диагностика бесплатная, последующие — 30 ₽. Без AI-доступа заявка всё равно передаётся мастеру. Оплату проверяет администратор.</p><form method='post' action='/requests/create' enctype='multipart/form-data' data-request-form>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         "<label>Описание проблемы<textarea name='description' minlength='10' maxlength='4000' required></textarea></label>"
+        "<label>Фотография (необязательно)<input type='file' name='photo' accept='image/jpeg,image/png,image/webp'></label><p class='muted'>JPG, PNG или WebP до 5 МБ. Мастер увидит фото даже без AI-оценки.</p>"
         f"<label>Срочность<select name='urgency'>{tariff_options}</select></label>"
         f"<label>Адрес выезда (необязательно)<input name='address' maxlength='500' value='{address_value}'></label>"
         f"<p class='muted'>{html.escape(texts['service_note'])}</p><button>Отправить заявку</button></form></section>"
     )
     preview_note = "<p class='dashboard-notice'>Вы создаёте настоящую заявку от своего аккаунта. Роль администратора сохраняется.</p>" if user.role == "admin" else ""
+    wallet = await get_wallet(db, user)
+    await db.commit()
+    ai_counter = "Безлимит по роли администратора" if user.role == "admin" else str(available_analyses(wallet))
     form_html = preview_note + ("<details class='create-request-panel' open>" if request.query_params.get("create") == "1" else "<details class='create-request-panel'>") + "<summary>＋ Создать заявку</summary>" + create_form + "</details>"
     return (
         "<section class='list-heading'><div><h1>Мои заявки</h1><p>Список обращений, статусы и предварительная стоимость ремонта.</p></div></section>"
+        + f"<p class='dashboard-notice'>AI-диагностик осталось: {ai_counter}</p>"
         + form_html
         + requests_table(requests, view="client" if user.role == "admin" else "", params=dict(request.query_params))
     )

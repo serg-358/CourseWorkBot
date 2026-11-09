@@ -23,6 +23,7 @@ from repair_bot.states import RequestStates
 from repair_bot.services.ai.diagnostics import analyze_repair_request
 from repair_bot.services.ai.budget import analyze_with_budget
 from repair_bot.database.crud.request_lifecycle import set_request_photo, request_photo_id
+from repair_bot.services.request_photos import read_web_photo
 from repair_bot.handlers.common import (
     CLIENT_EDITABLE_STATUSES,
     MAX_REQUEST_DESCRIPTION_LENGTH,
@@ -108,10 +109,13 @@ async def retry_request_ai(callback: CallbackQuery) -> None:
     photo = None
     if file_id:
         try:
-            output = BytesIO()
-            await callback.bot.download(file_id, destination=output)
-            photo = output.getvalue()
-        except TelegramAPIError:
+            if file_id.startswith("web:"):
+                photo = await read_web_photo(file_id)
+            else:
+                output = BytesIO()
+                await callback.bot.download(file_id, destination=output)
+                photo = output.getvalue()
+        except (TelegramAPIError, OSError, ValueError):
             await edit_callback_screen(callback, "Фото временно недоступно. Попытка не списана.", reply_markup=menu_for_user(callback.from_user.id, role))
             return
     await analyze_with_budget(SessionLocal, request_id, actor_id, analyze_repair_request, description, photo, file_id)
