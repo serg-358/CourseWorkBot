@@ -301,7 +301,8 @@ async def test_admin_analytics_exports_moscow_dashboard_data(db_session_factory,
         await db.flush()
         first = RepairRequest(user_id=owner.id, description="Late UTC", created_at=datetime(2026, 11, 21, 21, 30))
         second = RepairRequest(user_id=owner.id, description="Moscow day", created_at=datetime(2026, 11, 22, 12))
-        db.add_all([first, second])
+        third = RepairRequest(user_id=owner.id, description="Another same-day request", created_at=datetime(2026, 11, 22, 14))
+        db.add_all([first, second, third])
         await db.flush()
         db.add(RequestLifecycle(request_id=second.id, deleted_at=datetime(2026, 11, 22, 13)))
         db.add(WebsiteAccount(user_id=admin.id, email="analytics@example.test", password_hash=web_app.hash_password("test-pass-123")))
@@ -314,11 +315,19 @@ async def test_admin_analytics_exports_moscow_dashboard_data(db_session_factory,
         page = await client.get("/admin/analytics?period=7")
         assert "Скачать XLSX" in page.text
         assert "Всё время" in page.text
+        # Три заявки за московское 22.11, включая корзину: аналитика сохраняет историю.
+        chart = re.search(r"<h2>Заявки по дням</h2>.*?<div class='analytics-bars'[^>]*>(.*?)</div></section>", page.text, re.S).group(1)
+        values = [(label, int(count)) for label, count in re.findall(r"<span>(.*?)</span><small>([0-9]+)</small>", chart)]
+        assert len(values) == 7
+        assert values[-1] == ("22.11", 3)
+        assert sum(count for _, count in values) == 3
         export = await client.get("/admin/analytics/export?period=7")
 
     assert export.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
     workbook = load_workbook(BytesIO(export.content))
+    assert workbook["Сводка"]["B3"].value == 3
     assert workbook["Сводка"]["B4"].value == 1
+    assert list(workbook["Заявки по интервалам"].values)[-1] == ("22.11", 3)
 
 
 @pytest.mark.asyncio

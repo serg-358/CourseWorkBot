@@ -518,7 +518,7 @@ def create_app() -> FastAPI:
             client_revenue[item.user.full_name] = client_revenue.get(item.user.full_name, 0) + (request_price(item) or 0)
         top_revenue_clients = sorted(client_revenue.items(), key=lambda row: row[1], reverse=True)[:5]
         buckets = dashboard_buckets(period_start, period_end)
-        daily = [sum(start <= moscow_day(item.created_at) <= end for start, end, _label in buckets) for item in selected]
+        daily = [sum(start <= moscow_day(item.created_at) <= end for item in selected) for start, end, _label in buckets]
         daily_revenue = [sum((request_price(item) or 0) for item in completed if start <= moscow_day(completions.get(item.id, item.created_at)) <= end) for start, end, _label in buckets]
         maximum = max(daily, default=1) or 1
         bars = "".join(f"<div class='analytics-bar'><b style='height:{max(8, count * 100 / maximum):.0f}%'></b><span>{label}</span><small>{count}</small></div>" for (_start, _end, label), count in zip(buckets, daily))
