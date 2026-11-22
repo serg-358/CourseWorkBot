@@ -49,6 +49,8 @@ async def test_website_register_link_telegram_and_enforce_role_access(
         signed_in_home = await client.get("/")
         assert "client@example.test" in signed_in_home.text
         assert 'href="/register"' not in signed_in_home.text
+        assert 'href="/static/favicon.svg"' in signed_in_home.text
+        assert (await client.get("/static/favicon.svg")).status_code == 200
         for auth_path in ("/login", "/register"):
             auth_response = await client.get(auth_path, follow_redirects=False)
             assert auth_response.status_code == 303
