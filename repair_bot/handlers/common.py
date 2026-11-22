@@ -109,7 +109,7 @@ def admin_request_text(request: RepairRequest) -> str:
     }
     priority_labels = {"low": "Обычная", "medium": "Срочная", "high": "Критическая"}
     text = (
-        f"🧾 <b>Заявка №{request.id}</b>\n👤 Пользователь: {html.escape(request.user.full_name)}\n"
+        f"🧾 <b>{request_title(request)}</b>\n👤 Пользователь: {html.escape(request.user.full_name)}\n"
         f"📱 Телефон: {html.escape(request.user.phone)}\n"
         f"🎯 Приоритет: {priority_labels.get(selected_priority(request), selected_priority(request))}\n"
         f"📌 Статус: {status_labels.get(request.status, request.status)}\n\n"
@@ -164,7 +164,7 @@ def client_request_text(request: RepairRequest) -> str:
         "cancelled": "❌ Отменена",
     }
     text = (
-        f"🧾 <b>Заявка №{request.id}</b>\n"
+        f"🧾 <b>{request_title(request)}</b>\n"
         f"📌 Статус: {status_labels.get(request.status, request.status)}\n\n"
         f"{html.escape(request_description_preview(request.description))}"
     )
@@ -210,6 +210,13 @@ def client_request_text(request: RepairRequest) -> str:
         f"Итого предварительно: {total}{urgency_summary}\n\n"
         "ℹ️ Точный диагноз и цену подтвердит мастер."
     )
+
+
+def request_title(request: RepairRequest) -> str:
+    """Возвращает номер заявки с датой её создания для карточек интерфейса."""
+    created_at = getattr(request, "created_at", None)
+    date_label = created_at.strftime("%d.%m.%Y") if created_at else "—"
+    return f"Заявка №{request.id} от {date_label}"
 
 def format_rubles(kopecks: int | None) -> str:
     """Форматирует цену или сообщает, что её определит мастер."""

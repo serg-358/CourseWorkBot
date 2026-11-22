@@ -118,7 +118,7 @@ async def cancel_button(callback: CallbackQuery, state: FSMContext) -> None:
         if page is not None:
             request = requests[page]
             _, total_pages = bounded_page(page, len(requests))
-            await callback.answer("↩️ Дополнение отменено.")
+            await callback.answer()
             await edit_callback_screen(
                 callback,
                 client_request_text(request),
@@ -134,7 +134,7 @@ async def cancel_button(callback: CallbackQuery, state: FSMContext) -> None:
             )
             return
 
-    await callback.answer("↩️ Действие отменено.")
+    await callback.answer()
     if callback.message:
         screen_chat_id = state_data.get("screen_chat_id")
         screen_message_id = state_data.get("screen_message_id")
@@ -277,7 +277,7 @@ async def switch_demo_view(callback: CallbackQuery, state: FSMContext) -> None:
     async with SessionLocal() as db:
         user = await get_user_by_telegram_id(db, str(callback.from_user.id))
         text = await dashboard_text(db, user, role) if user else "📭 Профиль не найден. Нажмите /start."
-    await callback.answer("✅ Экран обновлён.")
+    await callback.answer()
     await edit_callback_screen(
         callback,
         text,

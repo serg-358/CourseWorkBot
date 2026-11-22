@@ -33,6 +33,8 @@ def test_admin_and_master_have_separate_menus():
         for button in row
     }
     assert "menu:admins" in admin_buttons
+    assert admin_buttons["menu:dashboard"] == "📊 Дашборд"
+    assert admin_buttons["menu:complaints:0"] == "⚠️ Жалобы"
     assert "view:master" in admin_buttons
     assert "menu:all_requests" not in admin_buttons
     assert admin_buttons["menu:admins"] == "🛡 Администраторы"

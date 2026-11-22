@@ -17,7 +17,8 @@ def main_menu_keyboard(
                 InlineKeyboardButton(text="🛠 Мастера", callback_data="menu:users:master"),
             ],
             [InlineKeyboardButton(text="🛡 Администраторы", callback_data="menu:admins")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:statistics")],
+            [InlineKeyboardButton(text="📊 Дашборд", callback_data="menu:dashboard")],
+            [InlineKeyboardButton(text="⚠️ Жалобы", callback_data="menu:complaints:0")],
             [InlineKeyboardButton(text="👤 Профиль", callback_data="menu:profile")],
         ]
     elif role == "master":

@@ -44,6 +44,43 @@ async def assigned_request_ids(db) -> set[int]:
         return set()
     return set((await db.scalars(select(RequestAssignment.request_id))).all())
 
+
+async def refresh_staff_request_card(callback: CallbackQuery, request_id: int) -> None:
+    """Перерисовывает текущую карточку сотрудника актуальными данными БД."""
+    if callback.from_user is None or callback.message is None:
+        return
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        if user is None or user.role not in {"admin", "master"}:
+            return
+        requests = await get_all_requests(db)
+        taken_ids = await assigned_request_ids(db)
+    page = next((index for index, item in enumerate(requests) if item.id == request_id), None)
+    if page is None:
+        return
+    item = requests[page]
+    total_pages = max(1, len(requests))
+    await edit_callback_screen(
+        callback,
+        f"🧾 <b>Заявка {page + 1} из {len(requests)}</b>\n\n{admin_request_text(item)}",
+        reply_markup=request_navigation_keyboard(
+            view="staff",
+            page=page,
+            total_pages=total_pages,
+            menu=menu_for_user(callback.from_user.id, user.role),
+            request_id=item.id,
+            current_status=item.status,
+            has_photo=bool(request_photo_id(item)),
+            can_edit_assessment=True,
+            can_take=(
+                item.status in {"new", "in_progress"}
+                and item.id not in taken_ids
+            ),
+            is_taken=item.id in taken_ids,
+        ),
+        parse_mode="HTML",
+    )
+
 @router.callback_query(F.data == "menu:all_requests")
 @router.callback_query(F.data.startswith("requests:staff:"))
 async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
@@ -144,7 +181,8 @@ async def take_request_from_bot(callback: CallbackQuery, bot: Bot) -> None:
     if item is None:
         await callback.answer("Заявка уже принята или закрыта.", show_alert=True)
         return
-    await callback.answer("Заявка принята в работу.")
+    await callback.answer()
+    await refresh_staff_request_card(callback, item.id)
     try:
         await bot.send_message(item.user.telegram_id, "🔧 Ваша заявка принята в работу.")
     except TelegramAPIError:
@@ -179,36 +217,8 @@ async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer("📭 Заявка не найдена.", show_alert=True)
         return
     changed = previous_status != status
-    await callback.answer(
-        "✅ Статус обновлён." if changed else "ℹ️ Заявка уже имеет этот статус."
-    )
-    if callback.message:
-        async with SessionLocal() as db:
-            requests = await get_all_requests(db)
-            role_user = await get_user_by_telegram_id(db, str(callback.from_user.id))
-            taken_ids = await assigned_request_ids(db)
-        page = next((index for index, item in enumerate(requests) if item.id == request.id), 0)
-        total_pages = max(1, len(requests))
-        role = role_user.role if role_user and role_user.role in {"admin", "master"} else "master"
-        await edit_callback_screen(
-            callback,
-            f"🧾 <b>Заявка {page + 1} из {len(requests)}</b>\n\n{admin_request_text(request)}",
-            reply_markup=request_navigation_keyboard(
-                view="staff",
-                page=page,
-                total_pages=total_pages,
-                menu=menu_for_user(callback.from_user.id, role),
-                request_id=request.id,
-                current_status=request.status,
-                has_photo=bool(
-                    request_photo_id(request)
-                ),
-            can_edit_assessment=True,
-            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"} and request.id not in taken_ids,
-            is_taken=request.id in taken_ids,
-            ),
-            parse_mode="HTML",
-        )
+    await callback.answer()
+    await refresh_staff_request_card(callback, request.id)
     if not changed:
         return
     status_labels = {

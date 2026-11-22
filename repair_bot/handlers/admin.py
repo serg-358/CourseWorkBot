@@ -1,11 +1,16 @@
 """Обработчики раздела admin."""
 
 import html
+from math import ceil
+
 from aiogram import F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy import select
+from repair_bot.database.crud.feedback import list_complaints
 from repair_bot.database.crud.requests import get_all_requests
 from repair_bot.database.crud.users import get_all_users, get_user_by_telegram_id
+from repair_bot.database.models import RepairRating
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import main_menu_keyboard
 from repair_bot.handlers.common import (
@@ -19,6 +24,15 @@ from aiogram import Router
 
 router = Router(name="admin")
 logger = logging.getLogger(__name__)
+
+COMPLAINTS_PER_PAGE = 5
+COMPLAINT_LABELS = {
+    "quality": "Качество",
+    "timing": "Сроки",
+    "price": "Стоимость",
+    "communication": "Общение",
+    "other": "Другое",
+}
 
 @router.callback_query(F.data.startswith("menu:users"))
 async def show_users(callback: CallbackQuery, state: FSMContext) -> None:
@@ -100,9 +114,9 @@ async def show_administrators(callback: CallbackQuery, state: FSMContext) -> Non
             parse_mode="HTML",
         )
 
-@router.callback_query(F.data == "menu:statistics")
-async def show_statistics(callback: CallbackQuery, state: FSMContext) -> None:
-    """Показывает доступную сейчас статистику по зарегистрированным пользователям."""
+@router.callback_query(F.data.in_({"menu:dashboard", "menu:statistics"}))
+async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
+    """Показывает администратору сводку по пользователям, заявкам и отзывам."""
     if callback.from_user is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
@@ -115,6 +129,8 @@ async def show_statistics(callback: CallbackQuery, state: FSMContext) -> None:
         else:
             users = await get_all_users(db)
             requests = await get_all_requests(db)
+            complaints = await list_complaints(db)
+            ratings = list((await db.scalars(select(RepairRating))).all())
 
     if users is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
@@ -130,18 +146,83 @@ async def show_statistics(callback: CallbackQuery, state: FSMContext) -> None:
     }
     await callback.answer()
     if callback.message:
+        average_rating = (
+            f"{sum(rating.score for rating in ratings) / len(ratings):.1f}"
+            if ratings
+            else "—"
+        )
         await edit_callback_screen(
             callback,
-            f"📊 <b>Статистика</b>\n\n"
+            f"📊 <b>Дашборд мастерской</b>\n\n"
             f"👥 Пользователи: {len(users)}\n"
             f"   Клиенты: {clients} · Мастера: {sum(user.role == 'master' for user in users)}\n"
             f"   Администраторы: {admins}\n\n"
             f"🧾 Заявки: {len(requests)}\n"
             f"   Новые: {statuses['new']} · В работе: {statuses['in_progress']}\n"
-            f"   Завершены: {statuses['completed']} · Отменены: {statuses['cancelled']}",
+            f"   Завершены: {statuses['completed']} · Отменены: {statuses['cancelled']}\n\n"
+            f"⭐ Средняя оценка: {average_rating}\n"
+            f"⚠️ Жалобы: {len(complaints)}",
             reply_markup=menu_for_user(callback.from_user.id, "admin"),
             parse_mode="HTML",
         )
+
+
+show_statistics = show_dashboard
+
+
+@router.callback_query(F.data.startswith("menu:complaints"))
+async def show_complaints(callback: CallbackQuery, state: FSMContext) -> None:
+    """Показывает администратору жалобы клиентов с постраничной навигацией."""
+    if callback.from_user is None:
+        await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
+        return
+    await state.clear()
+    try:
+        requested_page = int((callback.data or "").rsplit(":", 1)[-1])
+    except ValueError:
+        requested_page = 0
+    async with SessionLocal() as db:
+        admin = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        complaints = await list_complaints(db) if admin and admin.role == "admin" else None
+    if complaints is None:
+        await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message is None:
+        return
+    if not complaints:
+        await edit_callback_screen(
+            callback,
+            "⚠️ <b>Жалобы</b>\n\n📭 Жалоб пока нет.",
+            reply_markup=menu_for_user(callback.from_user.id, "admin"),
+            parse_mode="HTML",
+        )
+        return
+    total_pages = ceil(len(complaints) / COMPLAINTS_PER_PAGE)
+    page = min(max(requested_page, 0), total_pages - 1)
+    start = page * COMPLAINTS_PER_PAGE
+    lines = [f"⚠️ <b>Жалобы</b> · {len(complaints)}"]
+    for complaint in complaints[start:start + COMPLAINTS_PER_PAGE]:
+        lines.append(
+            f"\n\n🧾 <b>Заявка №{complaint.request_id}</b> · "
+            f"{complaint.created_at:%d.%m.%Y}\n"
+            f"Категория: {COMPLAINT_LABELS.get(complaint.category, complaint.category)}\n"
+            f"Мастер: {html.escape(complaint.master_name)}\n"
+            f"{html.escape(complaint.message) or 'Без комментария'}"
+        )
+    navigation = []
+    if page:
+        navigation.append(InlineKeyboardButton(text="← Предыдущие", callback_data=f"menu:complaints:{page - 1}"))
+    navigation.append(InlineKeyboardButton(text=f"{page + 1} / {total_pages}", callback_data="menu:complaints:info"))
+    if page + 1 < total_pages:
+        navigation.append(InlineKeyboardButton(text="Следующие →", callback_data=f"menu:complaints:{page + 1}"))
+    menu = menu_for_user(callback.from_user.id, "admin")
+    await edit_callback_screen(
+        callback,
+        "".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[navigation, *menu.inline_keyboard]),
+        parse_mode="HTML",
+    )
 
 @router.callback_query(F.data == "menu:profile")
 async def show_profile(callback: CallbackQuery, state: FSMContext) -> None:

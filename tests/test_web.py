@@ -10,6 +10,8 @@ import repair_bot.web.app as web_app
 from repair_bot.database.crud.users import create_user
 from repair_bot.database.crud.web import link_telegram_account
 from repair_bot.database.models import (
+    RepairComplaint,
+    RepairRating,
     RequestAddress,
     RequestUrgency,
     RepairRequest,
@@ -281,6 +283,66 @@ def test_password_hash_uses_scrypt_and_checks_correct_password():
     assert password_hash.startswith("scrypt$")
     assert web_app.verify_password("strong-password-123", password_hash)
     assert not web_app.verify_password("wrong-password", password_hash)
+
+
+@pytest.mark.asyncio
+async def test_completed_request_shows_saved_feedback_instead_of_forms(
+    db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(web_app, "SessionLocal", db_session_factory)
+    async with db_session_factory() as db:
+        owner = User(
+            telegram_id="91001",
+            full_name="Owner",
+            phone="+79990000001",
+            role="client",
+        )
+        db.add(owner)
+        await db.flush()
+        item = RepairRequest(
+            user_id=owner.id,
+            description="Completed repair",
+            status="completed",
+        )
+        db.add(item)
+        db.add(
+            WebsiteAccount(
+                user_id=owner.id,
+                email="feedback@example.test",
+                password_hash=web_app.hash_password("test-pass-123"),
+            )
+        )
+        await db.commit()
+        request_id = item.id
+
+    async with AsyncClient(
+        transport=ASGITransport(app=web_app.app), base_url="http://testserver"
+    ) as client:
+        login_page = await client.get("/login")
+        csrf = re.search(r"name='csrf' value='([^']+)'", login_page.text).group(1)
+        await client.post(
+            "/login",
+            data={
+                "csrf": csrf,
+                "email": "feedback@example.test",
+                "password": "test-pass-123",
+            },
+        )
+        before_feedback = await client.get(f"/requests/{request_id}")
+        assert "Оцените ремонт" in before_feedback.text
+        assert "Оставить жалобу" in before_feedback.text
+        assert f"Заявка №{request_id} от" in before_feedback.text
+
+        async with db_session_factory() as db:
+            db.add(RepairRating(request_id=request_id, score=4))
+            db.add(RepairComplaint(request_id=request_id, category="quality", message=""))
+            await db.commit()
+
+        after_feedback = await client.get(f"/requests/{request_id}")
+        assert "Оценка уже оставлена" in after_feedback.text
+        assert "Вы оценили ремонт на 4 из 5." in after_feedback.text
+        assert "Жалоба уже оставлена" in after_feedback.text
+        assert "action='/requests/" not in after_feedback.text
 
 @pytest.mark.asyncio
 async def test_request_details_photos_and_previews_are_authorized(db_session_factory, monkeypatch):

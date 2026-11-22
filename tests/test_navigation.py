@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from io import BytesIO
@@ -6,7 +7,8 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import GetMe
 
-from repair_bot.handlers import auth, client_requests, registration, staff_requests
+from repair_bot.handlers import admin, auth, client_requests, registration, staff_requests
+from repair_bot.handlers.common import request_title
 from repair_bot.keyboards import main_menu_keyboard, request_navigation_keyboard
 
 
@@ -70,6 +72,12 @@ def test_ai_assessment_text_is_split_into_readable_blocks():
     assert "<b>🔎 Предварительная причина</b>\nПроверить модули памяти.\n\n" in master_text
     assert "<b>🧩 Детали для проверки</b>" in master_text
     assert "<b>💰 Расчёт ИИ</b>\nСебестоимость: 2 000 ₽" in master_text
+
+
+def test_request_title_includes_creation_date():
+    request = SimpleNamespace(id=42, created_at=datetime(2026, 11, 22))
+
+    assert request_title(request) == "Заявка №42 от 22.11.2026"
 
 
 def test_client_card_adds_urgency_fee_to_estimate_and_keeps_it_separate():
@@ -171,6 +179,37 @@ def test_completed_request_shows_saved_feedback_as_inactive_actions():
     }
     assert buttons["⭐ Заявка оценена на 4 баллов"] == "requests:page-info:1:1"
     assert buttons["⚠️ Жалоба уже оставлена"] == "requests:page-info:1:1"
+
+
+@pytest.mark.asyncio
+async def test_admin_complaints_screen_shows_empty_state(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    monkeypatch.setattr(admin, "SessionLocal", Session)
+    monkeypatch.setattr(
+        admin,
+        "get_user_by_telegram_id",
+        AsyncMock(return_value=SimpleNamespace(role="admin")),
+    )
+    monkeypatch.setattr(admin, "list_complaints", AsyncMock(return_value=[]))
+    message = SimpleNamespace(edit_text=AsyncMock())
+    callback = SimpleNamespace(
+        data="menu:complaints:0",
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(clear=AsyncMock())
+
+    await admin.show_complaints(callback, state)
+
+    callback.answer.assert_awaited_once_with()
+    assert "Жалоб пока нет" in message.edit_text.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -598,7 +637,7 @@ async def test_cancel_addition_returns_to_same_request(monkeypatch):
 
     await auth.cancel_button(callback, state)
 
-    callback.answer.assert_awaited_once_with("↩️ Дополнение отменено.")
+    callback.answer.assert_awaited_once_with()
     assert "Заявка №13" in message.edit_text.await_args.args[0]
     assert message.edit_text.await_args.kwargs["parse_mode"] == "HTML"
 
@@ -619,7 +658,7 @@ async def test_cancel_button_deletes_new_dialog_message():
 
     await auth.cancel_button(callback, state)
 
-    callback.answer.assert_awaited_once_with("↩️ Действие отменено.")
+    callback.answer.assert_awaited_once_with()
     message.delete.assert_awaited_once()
     message.edit_text.assert_not_awaited()
 

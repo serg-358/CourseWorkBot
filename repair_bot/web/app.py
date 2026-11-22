@@ -49,7 +49,13 @@ from repair_bot.database.crud.requests import (
     update_request_status,
     take_request,
 )
-from repair_bot.database.crud.feedback import COMPLAINT_CATEGORIES, list_complaints, save_complaint, save_rating
+from repair_bot.database.crud.feedback import (
+    COMPLAINT_CATEGORIES,
+    get_feedback_state,
+    list_complaints,
+    save_complaint,
+    save_rating,
+)
 from repair_bot.database.crud.telegram_codes import verify_telegram_code
 from repair_bot.services.staff_assessment import effective_staff_details
 from repair_bot.database.crud.users import get_all_users
@@ -71,6 +77,7 @@ from repair_bot.handlers.common import (
     client_request_text,
     configured_role_for_telegram_id,
     format_rubles,
+    request_title,
 )
 from repair_bot.handlers.staff_requests import parse_client_price
 from repair_bot.services.ai.diagnostics import analyze_repair_request
@@ -771,12 +778,13 @@ def create_app() -> FastAPI:
             view = effective_view(request, user)
             address = await db.scalar(select(RequestAddress).where(RequestAddress.request_id == request_id))
             assignment = await db.get(RequestAssignment, request_id)
+            rating_score, has_complaint = await get_feedback_state(db, request_id)
             text = admin_request_text(item) if view in {"admin", "master"} else client_request_text(item)
             photo = (
                 f"<img class='request-photo' src='/requests/{item.id}/photo?view={view}' alt='Фотография к заявке №{item.id}'>"
                 if request_photo_id(item) else "<p>Фотография к заявке не приложена.</p>"
             )
-            content = f"<a class='button secondary' href='/panel?tab=requests&view={view}'>← К списку</a><article class='request-card'><h1>Заявка №{item.id}</h1>"
+            content = f"<a class='button secondary' href='/panel?tab=requests&view={view}'>← К списку</a><article class='request-card'><h1>{request_title(item)}</h1>"
             if request.query_params.get("created") == "1":
                 content += "<p class='dashboard-notice'>Заявка создана и сохранена. Мастер увидит ваше обращение.</p>"
             content += text.replace(chr(10), "<br>") + photo
@@ -797,11 +805,17 @@ def create_app() -> FastAPI:
                         content += f"<p class='dashboard-notice'>Заявка уже в работе: {html.escape(assignment.master_name)}.</p>"
                 content += staff_request_form(item, csrf_token(request), view)
             if not deleted and view == "client" and item.status == "completed":
-                content += f"<section class='card'><h2>Оцените ремонт</h2><form method='post' action='/requests/{item.id}/rating?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Оценка<select name='score'><option value='5'>5</option><option value='4'>4</option><option value='3'>3</option><option value='2'>2</option><option value='1'>1</option></select></label><label>Комментарий<textarea name='comment' maxlength='3000'></textarea></label><button>Отправить оценку</button></form></section>"
-                content += f"<section class='card'><h2>Оставить жалобу</h2><form method='post' action='/requests/{item.id}/complaint?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
+                if rating_score is None:
+                    content += f"<section class='card'><h2>Оцените ремонт</h2><form method='post' action='/requests/{item.id}/rating?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Оценка<select name='score'><option value='5'>5</option><option value='4'>4</option><option value='3'>3</option><option value='2'>2</option><option value='1'>1</option></select></label><label>Комментарий<textarea name='comment' maxlength='3000'></textarea></label><button>Отправить оценку</button></form></section>"
+                else:
+                    content += f"<section class='card'><h2>Оценка уже оставлена</h2><p>Вы оценили ремонт на {rating_score} из 5.</p></section>"
+                if not has_complaint:
+                    content += f"<section class='card'><h2>Оставить жалобу</h2><form method='post' action='/requests/{item.id}/complaint?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
+                else:
+                    content += "<section class='card'><h2>Жалоба уже оставлена</h2><p>Обращение передано администраторам.</p></section>"
             if not deleted and item.status in {"new", "in_progress"} and not request_photo_id(item):
                 content += f"<form method='post' enctype='multipart/form-data' action='/requests/{item.id}/photo' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><h2>Добавить фотографию</h2><label>Фото неисправности<input name='photo' type='file' accept='image/jpeg,image/png,image/webp' required></label><p>JPG, PNG или WebP до 5 МБ. Фото получит мастер; готовая AI-оценка не перезаписывается.</p><button>Сохранить фото</button></form>"
-            return render_page(request, f"Заявка №{item.id}", content + "</article>")
+            return render_page(request, request_title(item), content + "</article>")
 
     @app.post("/requests/{request_id}/photo")
     async def attach_request_photo(request: Request, request_id: int) -> Response:

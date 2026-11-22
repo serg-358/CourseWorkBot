@@ -344,7 +344,7 @@ async def retry_request_ai(callback: CallbackQuery) -> None:
             await callback.answer("Нет доступа к заявке.", show_alert=True)
             return
         file_id, description, actor_id, role = request_photo_id(item), item.description, user.id, user.role
-    await callback.answer("Проверяем доступ к AI…")
+    await callback.answer()
     photo = None
     if file_id:
         try:
@@ -367,7 +367,7 @@ async def retry_request_ai(callback: CallbackQuery) -> None:
 async def show_page_info(callback: CallbackQuery) -> None:
     parts = (callback.data or "").split(":")
     if len(parts) == 4 and parts[2].isdigit() and parts[3].isdigit():
-        await callback.answer(f"📄 Страница {parts[2]} из {parts[3]}")
+        await callback.answer()
     else:
         await callback.answer()
 
