@@ -502,13 +502,6 @@ def create_app() -> FastAPI:
         else:
             period_start, period_end, _period_label = dashboard_period(items, shortcut_period)
         span = (period_end - period_start).days + 1
-        dashboard = build_dashboard_data(
-            items,
-            ratings.values(),
-            complaints,
-            start=period_start,
-            end=period_end,
-        )
         selected = [item for item in items if period_start <= moscow_day(item.created_at) <= period_end]
         completed = [item for item in items if item.status == "completed" and period_start <= moscow_day(completions.get(item.id, item.created_at)) <= period_end]
         revenue = sum(request_price(item) or 0 for item in completed)
@@ -525,10 +518,10 @@ def create_app() -> FastAPI:
             client_revenue[item.user.full_name] = client_revenue.get(item.user.full_name, 0) + (request_price(item) or 0)
         top_revenue_clients = sorted(client_revenue.items(), key=lambda row: row[1], reverse=True)[:5]
         buckets = dashboard_buckets(period_start, period_end)
-        daily = dashboard.timeline_counts
+        daily = [sum(start <= moscow_day(item.created_at) <= end for start, end, _label in buckets) for item in selected]
         daily_revenue = [sum((request_price(item) or 0) for item in completed if start <= moscow_day(completions.get(item.id, item.created_at)) <= end) for start, end, _label in buckets]
         maximum = max(daily, default=1) or 1
-        bars = "".join(f"<div class='analytics-bar'><small>{count}</small><b style='height:{count * 100 / maximum:.0f}%'></b><span>{label}</span></div>" for (_start, _end, label), count in zip(buckets, daily))
+        bars = "".join(f"<div class='analytics-bar'><b style='height:{max(8, count * 100 / maximum):.0f}%'></b><span>{label}</span><small>{count}</small></div>" for (_start, _end, label), count in zip(buckets, daily))
         revenue_max = max(daily_revenue, default=1) or 1
         revenue_bars = "".join(f"<div class='analytics-bar revenue'><b style='height:{max(8, amount * 100 / revenue_max):.0f}%'></b><span>{label}</span><small>{format_rubles(amount)}</small></div>" for (_start, _end, label), amount in zip(buckets, daily_revenue))
         palette = {"new": "#78a6ff", "in_progress": "#3ddc97", "completed": "#b18cff", "cancelled": "#ff8a80"}
@@ -576,9 +569,9 @@ def create_app() -> FastAPI:
         period_caption = "По дням" if len(buckets) == span else "По интервалам"
         content = ("<section class='dashboard-heading'><div><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, финансам и качеству работы.</p></div>"
                    f"<form class='analytics-period' method='get'><nav class='analytics-period-shortcuts'>{period_links}</nav><label>С<input type='date' name='from' value='{period_start}'></label><label>По<input type='date' name='to' value='{period_end}'></label><button>Показать</button><a class='button secondary' href='/admin/analytics/export?{html.escape(export_query, quote=True)}'>Скачать XLSX</a></form></section>"
-                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{dashboard.request_count}</strong><small>{comparison(dashboard.request_count, len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
+                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(selected)}</strong><small>{comparison(len(selected), len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
                    f"<div class='analytics-secondary'><article><span>Средний чек</span><strong>{format_rubles(avg_check)}</strong></article><article><span>Отмены</span><strong>{cancellation_rate:.0f}%</strong></article><article><span>Средняя оценка</span><strong>{average_rating}</strong></article><article><span>Ответы клиентов</span><strong>{len(rating_rows) * 100 / max(len(completed), 1):.0f}%</strong></article></div>"
-                   + f"<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки {period_caption.lower()}</h2><span class='panel-caption'>По дате создания · всего: {dashboard.request_count}</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + bars + "</div></section>"
+                   + f"<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки {period_caption.lower()}</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + bars + "</div></section>"
                    + f"<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Выручка {period_caption.lower()}</h2><span class='panel-caption'>По дате завершения</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + revenue_bars + "</div></section>"
                    + "<section class='dashboard-panel'><h2>Статусы заявок</h2><div class='analytics-donut'><svg viewBox='0 0 140 140'>" + "".join(segments) + f"<text x='70' y='66'>{len(selected)}</text><text x='70' y='84'>всего</text></svg><ul>" + status_legend + "</ul></div></section>"
                    + "<section class='dashboard-panel'><h2>Срочность</h2>" + urgency_rows + "</section>"
