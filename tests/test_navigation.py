@@ -181,6 +181,35 @@ def test_completed_request_shows_saved_feedback_as_inactive_actions():
     assert buttons["⚠️ Жалоба уже оставлена"] == "requests:page-info:1:1"
 
 
+def test_client_feedback_card_keeps_client_menu_for_admin_preview():
+    request = SimpleNamespace(
+        id=42,
+        status="completed",
+        ai_assessment=None,
+        lifecycle=SimpleNamespace(imported=False),
+    )
+
+    keyboard = client_requests.client_request_keyboard(
+        request,
+        telegram_id=55,
+        page=0,
+        total_pages=1,
+        role="admin",
+        rating_score=None,
+        has_complaint=False,
+        display_role="client",
+    )
+    callbacks = {
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    }
+
+    assert "menu:requests" in callbacks
+    assert "menu:dashboard" not in callbacks
+    assert "menu:complaints:0" not in callbacks
+
+
 @pytest.mark.asyncio
 async def test_admin_complaints_screen_shows_empty_state(monkeypatch):
     class Session:

@@ -56,13 +56,23 @@ def client_request_keyboard(
     role: str,
     rating_score: int | None,
     has_complaint: bool,
+    display_role: str | None = None,
 ):
     """Собирает клавиатуру клиентской карточки с актуальным состоянием обратной связи."""
+    menu = (
+        main_menu_keyboard(
+            display_role,
+            demo_role=display_role if role == "admin" else None,
+            allow_role_switch=role == "admin",
+        )
+        if display_role is not None
+        else menu_for_user(telegram_id, role)
+    )
     return request_navigation_keyboard(
         view="client",
         page=page,
         total_pages=total_pages,
-        menu=menu_for_user(telegram_id, role),
+        menu=menu,
         request_id=request.id,
         can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
         can_analyze=request.status in CLIENT_EDITABLE_STATUSES and not getattr(request, "ai_assessment", None) and not (getattr(request, "lifecycle", None) and request.lifecycle.imported),
@@ -137,6 +147,7 @@ async def rate_completed_request(callback: CallbackQuery, state: FSMContext) -> 
             await state.update_data(
                 feedback_screen_chat_id=callback.message.chat.id,
                 feedback_screen_message_id=callback.message.message_id,
+                feedback_display_role="client",
             )
             await callback.message.answer("Оцените ремонт от 1 до 5.", reply_markup=keyboard)
         return
@@ -179,6 +190,7 @@ async def rate_completed_request(callback: CallbackQuery, state: FSMContext) -> 
                 role=user.role,
                 rating_score=rating_score,
                 has_complaint=has_complaint,
+                display_role=data.get("feedback_display_role"),
             ),
             parse_mode="HTML",
         )
@@ -199,6 +211,7 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext) -> None:
         await state.update_data(
             feedback_screen_chat_id=callback.message.chat.id,
             feedback_screen_message_id=callback.message.message_id,
+            feedback_display_role="client",
         )
         await callback.answer()
         await callback.message.answer("Выберите категорию жалобы.", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -308,6 +321,7 @@ async def save_complaint_response(
         role=user.role,
         rating_score=rating_score,
         has_complaint=has_complaint,
+        display_role=data.get("feedback_display_role"),
     )
     screen_chat_id = data.get("feedback_screen_chat_id")
     screen_message_id = data.get("feedback_screen_message_id")
