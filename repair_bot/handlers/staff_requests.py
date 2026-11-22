@@ -12,6 +12,7 @@ from repair_bot.database.crud.requests import (
     get_all_requests,
     get_repair_request,
     update_request_status,
+    take_request,
 )
 from repair_bot.database.crud.users import get_user_by_telegram_id
 from repair_bot.database.session import SessionLocal
@@ -82,6 +83,7 @@ async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
                 request_photo_id(request)
             ),
             can_edit_assessment=True,
+            can_take=role == "master" and request.status in {"new", "in_progress"},
         ),
         parse_mode="HTML",
     )
@@ -115,6 +117,28 @@ async def show_request_photo(callback: CallbackQuery) -> None:
             return
     await callback.message.answer_photo(photo, caption=f"🖼️ Фото заявки №{request.id}")
     await callback.answer()
+
+@router.callback_query(F.data.startswith("request:take:"))
+async def take_request_from_bot(callback: CallbackQuery, bot: Bot) -> None:
+    """Позволяет мастеру атомарно принять свободную заявку."""
+    if callback.from_user is None:
+        return
+    match = re.fullmatch(r"request:take:(\d+)", callback.data or "")
+    if match is None:
+        await callback.answer("Некорректная заявка.", show_alert=True)
+        return
+    async with SessionLocal() as db:
+        master = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        item = await take_request(db, int(match.group(1)), master.id) if master else None
+    if item is None:
+        await callback.answer("Заявка уже принята или закрыта.", show_alert=True)
+        return
+    await callback.answer("Заявка принята в работу.")
+    try:
+        await bot.send_message(item.user.telegram_id, "🔧 Ваша заявка принята в работу.")
+    except TelegramAPIError:
+        logger.info("Не удалось уведомить клиента о принятии заявки №%s.", item.id)
+
 
 @router.callback_query(F.data.startswith("request:status:"))
 async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
@@ -168,6 +192,7 @@ async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
                     request_photo_id(request)
                 ),
             can_edit_assessment=True,
+            can_take=role == "master" and request.status in {"new", "in_progress"},
             ),
             parse_mode="HTML",
         )
@@ -382,6 +407,7 @@ async def process_staff_price(message: Message, state: FSMContext) -> None:
                 request_photo_id(request)
             ),
             can_edit_assessment=True,
+            can_take=role == "master" and request.status in {"new", "in_progress"},
         ),
         parse_mode="HTML",
     )

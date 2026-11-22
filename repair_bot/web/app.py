@@ -47,7 +47,9 @@ from repair_bot.database.crud.requests import (
     get_repair_request,
     get_user_requests,
     update_request_status,
+    take_request,
 )
+from repair_bot.database.crud.feedback import COMPLAINT_CATEGORIES, list_complaints, save_complaint, save_rating
 from repair_bot.database.crud.telegram_codes import verify_telegram_code
 from repair_bot.services.staff_assessment import effective_staff_details
 from repair_bot.database.crud.users import get_all_users
@@ -408,6 +410,83 @@ def create_app() -> FastAPI:
             await notify_client_status(owner_telegram_id, request_id, status)
         return RedirectResponse("/panel", status_code=303)
 
+    @app.post("/staff/requests/{request_id}/take")
+    async def take_request_from_site(request: Request, request_id: int) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None or user is None or user.role != "master":
+                return forbidden_page(request)
+            item = await take_request(db, request_id, user.id)
+        if item is None:
+            return error_page(request, "Заявку уже принял другой мастер или она закрыта.", "/panel?tab=requests")
+        await notify_client_status(item.user.telegram_id, item.id, "in_progress")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    @app.post("/requests/{request_id}/rating")
+    async def rate_request(request: Request, request_id: int) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        try:
+            score = int(form.get("score", "0"))
+        except ValueError:
+            score = 0
+        comment = form.get("comment", "").strip()
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None or user is None or user.role != "client" or len(comment) > 3000 or not await save_rating(db, request_id, user.id, score, comment):
+                return forbidden_page(request)
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    @app.post("/requests/{request_id}/complaint")
+    async def complain_about_request(request: Request, request_id: int) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        category, message = form.get("category", ""), form.get("message", "").strip()
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None or user is None or user.role != "client" or category not in COMPLAINT_CATEGORIES or len(message) > 3000 or not await save_complaint(db, request_id, user.id, category, message):
+                return forbidden_page(request)
+            recipients = [item.telegram_id for item in await users_by_role(db, "admin")]
+        await deliver_feedback(recipients, f"Жалоба по заявке №{request_id}\nКатегория: {category}\n\n{message}")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    @app.get("/admin/analytics", response_class=HTMLResponse)
+    async def admin_analytics(request: Request) -> Response:
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None or user is None or user.role != "admin":
+                return forbidden_page(request)
+            items = await get_all_requests(db)
+            complaints = await list_complaints(db)
+        completed = [item for item in items if item.status == "completed"]
+        revenue = sum(request_price(item) or 0 for item in completed)
+        counts = {status: sum(item.status == status for item in items) for status in STATUSES}
+        client_counts = {}
+        for item in items:
+            client_counts[item.user.full_name] = client_counts.get(item.user.full_name, 0) + 1
+        top_clients = sorted(client_counts.items(), key=lambda row: row[1], reverse=True)[:5]
+        content = ("<section class='dashboard-heading'><h1>Аналитика мастерской</h1><p>Сводка по всем заявкам.</p></section>"
+                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(items)}</strong></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
+                   + "<section class='dashboard-panel'><h2>Статусы</h2>" + " · ".join(f"{STATUSES[key]}: {value}" for key, value in counts.items()) + "</section>"
+                   + "<section class='dashboard-panel'><h2>Частые клиенты</h2><ol>" + "".join(f"<li>{html.escape(name)} — {count} заявок</li>" for name, count in top_clients) + "</ol></section>")
+        return render_page(request, "Аналитика", content)
+
+    @app.get("/admin/complaints", response_class=HTMLResponse)
+    async def admin_complaints(request: Request) -> Response:
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None or user is None or user.role != "admin":
+                return forbidden_page(request)
+            complaints = await list_complaints(db)
+        labels = {"quality": "Качество", "timing": "Сроки", "price": "Стоимость", "communication": "Общение", "other": "Другое"}
+        rows = "".join(f"<article class='card'><h2>Заявка №{row.request_id}</h2><p>{labels.get(row.category, row.category)} · {html.escape(row.master_name)} · {row.created_at:%d.%m.%Y}</p><p>{html.escape(row.message) or 'Без комментария'}</p><a href='/requests/{row.request_id}'>Открыть заявку →</a></article>" for row in complaints)
+        return render_page(request, "Жалобы", "<section class='dashboard-heading'><h1>Жалобы</h1><p>Обращения клиентов по завершённым ремонтам.</p></section>" + (rows or "<section class='card'><p>Жалоб пока нет.</p></section>"))
+
     @app.post("/admin/users/{user_id}/role")
     async def admin_change_role(request: Request, user_id: int) -> Response:
         form = await read_form(request)
@@ -627,7 +706,12 @@ def create_app() -> FastAPI:
             if not deleted and item.status in {"new", "in_progress"} and not item.ai_assessment and not (item.lifecycle and item.lifecycle.imported):
                 content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатна. Онлайн-оплата пока не подключена; дополнительный доступ выдаёт администратор. При технической ошибке обратитесь через раздел «Обратная связь».</p><button>Выполнить доступную AI-диагностику</button></form>"
             if not deleted and view in {"master", "admin"}:
+                if view == "master" and user.role == "master" and item.status in {"new", "in_progress"}:
+                    content += f"<form method='post' action='/staff/requests/{item.id}/take'><input type='hidden' name='csrf' value='{csrf_token(request)}'><button>Взять в работу</button></form>"
                 content += staff_request_form(item, csrf_token(request))
+            if not deleted and view == "client" and item.status == "completed":
+                content += f"<section class='card'><h2>Оцените ремонт</h2><form method='post' action='/requests/{item.id}/rating'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Оценка<select name='score'><option value='5'>5</option><option value='4'>4</option><option value='3'>3</option><option value='2'>2</option><option value='1'>1</option></select></label><label>Комментарий<textarea name='comment' maxlength='3000'></textarea></label><button>Отправить оценку</button></form></section>"
+                content += f"<section class='card'><h2>Оставить жалобу</h2><form method='post' action='/requests/{item.id}/complaint'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
             if not deleted and item.status in {"new", "in_progress"} and not request_photo_id(item):
                 content += f"<form method='post' enctype='multipart/form-data' action='/requests/{item.id}/photo' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><h2>Добавить фотографию</h2><label>Фото неисправности<input name='photo' type='file' accept='image/jpeg,image/png,image/webp' required></label><p>JPG, PNG или WebP до 5 МБ. Фото получит мастер; готовая AI-оценка не перезаписывается.</p><button>Сохранить фото</button></form>"
             return render_page(request, f"Заявка №{item.id}", content + "</article>")
@@ -983,7 +1067,7 @@ def navigation_items(role: str | None, path: str, tab: str = "overview", preview
     options = {
         "client": [common[0], ("Мои заявки", "/panel?tab=requests"), ("Услуги и цены", "/panel?tab=tariffs"), ("Сертификаты", "/panel?tab=certificates"), *common[1:]],
         "master": [common[0], ("Очередь", "/panel?tab=requests"), ("В работе", "/panel?tab=requests&status=in_progress"), ("Архив", "/panel?tab=requests&status=closed"), *common[1:]],
-        "admin": [common[0], ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("AI-доступ", "/admin/ai"), ("Тарифы", "/admin/tariffs"), common[1]],
+        "admin": [common[0], ("Аналитика", "/admin/analytics"), ("Жалобы", "/admin/complaints"), ("Заявки", "/admin/requests"), ("Пользователи", "/admin/users"), ("Сертификаты", "/admin/certificates"), ("AI-доступ", "/admin/ai"), ("Тарифы", "/admin/tariffs"), common[1]],
     }
     result = []
     for label, href in options.get(role or "", []):

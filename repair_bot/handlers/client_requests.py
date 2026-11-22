@@ -5,9 +5,10 @@ from io import BytesIO
 from aiogram import F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from repair_bot.database.crud.feedback import COMPLAINT_CATEGORIES, save_complaint, save_rating
 from repair_bot.database.crud.requests import append_request_description, create_repair_request, get_repair_request, get_user_requests
-from repair_bot.database.crud.users import get_user_by_telegram_id
+from repair_bot.database.crud.users import get_all_users, get_user_by_telegram_id
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import (
     dialog_keyboard,
@@ -84,8 +85,73 @@ async def show_my_requests(callback: CallbackQuery, state: FSMContext) -> None:
             request_id=request.id,
             can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
             can_analyze=request.status in CLIENT_EDITABLE_STATUSES and not getattr(request, "ai_assessment", None) and not (getattr(request, "lifecycle", None) and request.lifecycle.imported),
+            can_rate=request.status == "completed",
+            can_complain=request.status == "completed",
         )
     await edit_callback_screen(callback, text, reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("request:rate:"))
+async def rate_completed_request(callback: CallbackQuery) -> None:
+    """Сохраняет одну оценку владельца завершённой заявки."""
+    if callback.from_user is None:
+        return
+    parts = (callback.data or "").split(":")
+    if len(parts) == 3 and parts[2].isdigit():
+        request_id = int(parts[2])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=str(score), callback_data=f"request:rate:{request_id}:{score}") for score in range(1, 6)]])
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer("Оцените ремонт от 1 до 5.", reply_markup=keyboard)
+        return
+    if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
+        await callback.answer("Некорректная оценка.", show_alert=True)
+        return
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        saved = bool(user and await save_rating(db, int(parts[2]), user.id, int(parts[3])))
+    await callback.answer("Спасибо за оценку!" if saved else "Оценка недоступна или уже оставлена.", show_alert=not saved)
+
+
+@router.callback_query(F.data.startswith("request:complain:"))
+async def start_complaint(callback: CallbackQuery, state: FSMContext) -> None:
+    """Запрашивает категорию и текст жалобы у владельца заявки."""
+    if callback.from_user is None or callback.message is None:
+        return
+    parts = (callback.data or "").split(":")
+    if len(parts) == 3 and parts[2].isdigit():
+        request_id = int(parts[2])
+        buttons = [[InlineKeyboardButton(text=label, callback_data=f"request:complain:{request_id}:{code}")] for code, label in (("quality", "Качество"), ("timing", "Сроки"), ("price", "Стоимость"), ("communication", "Общение"), ("other", "Другое"))]
+        await callback.answer()
+        await callback.message.answer("Выберите категорию жалобы.", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        return
+    if len(parts) != 4 or not parts[2].isdigit() or parts[3] not in COMPLAINT_CATEGORIES:
+        await callback.answer("Некорректная жалоба.", show_alert=True)
+        return
+    await state.set_state(RequestStates.waiting_complaint_text)
+    await state.update_data(complaint_request_id=int(parts[2]), complaint_category=parts[3])
+    await callback.answer()
+    await callback.message.answer("Опишите ситуацию (для категории «Другое» текст обязателен).")
+
+
+@router.message(RequestStates.waiting_complaint_text, F.text)
+async def save_complaint_text(message: Message, state: FSMContext) -> None:
+    if message.from_user is None:
+        return
+    data, text = await state.get_data(), (message.text or "").strip()
+    request_id, category = data.get("complaint_request_id"), data.get("complaint_category")
+    async with SessionLocal() as db:
+        user = await get_user_by_telegram_id(db, str(message.from_user.id))
+        saved = bool(isinstance(request_id, int) and isinstance(category, str) and user and len(text) <= 3000 and await save_complaint(db, request_id, user.id, category, text))
+        admins = [item.telegram_id for item in await get_all_users(db) if item.role == "admin"] if saved else []
+    await state.clear()
+    if saved:
+        for telegram_id in admins:
+            try:
+                await message.bot.send_message(telegram_id, f"Жалоба по заявке №{request_id}\nКатегория: {category}\n\n{text}")
+            except TelegramAPIError:
+                logger.info("Не удалось доставить жалобу администратору.")
+    await message.answer("Жалоба отправлена администраторам." if saved else "Не удалось отправить жалобу: срок истёк, заявка не завершена или жалоба уже есть.")
 
 
 @router.callback_query(F.data.startswith("request:ai:"))

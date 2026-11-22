@@ -16,6 +16,8 @@ from repair_bot.database.models import (
     GiftCertificate,
     StaffEditDetails,
     RequestLifecycle,
+    RequestAssignment,
+    RequestCompletion,
 )
 
 
@@ -123,12 +125,36 @@ async def update_request_status(
     if request is None:
         return None
     request.status = status
+    if status == "completed":
+        completion = await db.get(RequestCompletion, request_id)
+        if completion is None:
+            db.add(RequestCompletion(request_id=request_id))
+        else:
+            from repair_bot.database.models import utcnow
+            completion.completed_at = utcnow()
+    elif await db.get(RequestCompletion, request_id):
+        await db.delete(await db.get(RequestCompletion, request_id))
     await db.flush()
     from repair_bot.database.crud.certificates import settle_for_status
     await settle_for_status(db, request_id, status)
     await db.commit()
     await db.refresh(request)
     return request
+
+
+async def take_request(db: AsyncSession, request_id: int, master_id: int) -> RepairRequest | None:
+    """Закрепляет открытую заявку за мастером только при первом принятии."""
+    request = await get_repair_request(db, request_id)
+    master = await db.get(User, master_id)
+    if request is None or master is None or master.role != "master" or request.status not in {"new", "in_progress"}:
+        return None
+    if await db.get(RequestAssignment, request_id):
+        return None
+    db.add(RequestAssignment(request_id=request_id, master_user_id=master.id, master_name=master.full_name))
+    if request.status == "new":
+        request.status = "in_progress"
+    await db.commit()
+    return await get_repair_request(db, request_id)
 
 
 async def append_request_description(

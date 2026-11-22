@@ -12,3 +12,4 @@ class RequestStates(StatesGroup):
     waiting_staff_parts = State()
     waiting_staff_tools = State()
     waiting_staff_price = State()
+    waiting_complaint_text = State()
