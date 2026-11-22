@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 from repair_bot.services.admin_dashboard import (
     build_dashboard_data,
+    dashboard_detail_message,
     build_dashboard_xlsx,
     dashboard_message,
 )
@@ -40,6 +41,8 @@ def test_dashboard_data_filters_period_and_exports_xlsx():
         "Срочность",
         "Оценки",
         "Жалобы",
+        "Клиенты по стоимости",
+        "Мастера",
     ]
 
 
@@ -78,15 +81,13 @@ def test_dashboard_uses_moscow_dates_and_includes_trash():
     assert dashboard.trash_count == 1
 
 
-def test_dashboard_message_has_finances_clients_and_masters():
+def test_dashboard_messages_split_summary_and_details():
     dashboard = build_dashboard_data([], [], [], "7")
 
-    message = dashboard_message(
+    message = dashboard_message(dashboard)
+    details = dashboard_detail_message(
+        "cost",
         dashboard,
-        users_total=3,
-        clients=1,
-        masters=1,
-        admins=1,
         revenue_kopecks=125_000,
         average_check_kopecks=125_000,
         cancellation_rate=20,
@@ -96,7 +97,7 @@ def test_dashboard_message_has_finances_clients_and_masters():
         master_rows=[("Мастер", 1, 125_000, 5.0, 0)],
     )
 
-    assert "Финансы и скорость" in message
-    assert "Клиенты по выручке" in message
-    assert "Мастера" in message
-    assert "1 ч. 30 мин." in message
+    assert "Заявки" in message
+    assert "Стоимость завершённых ремонтов" in details
+    assert "Клиенты по стоимости" in details
+    assert "1 ч. 30 мин." in details

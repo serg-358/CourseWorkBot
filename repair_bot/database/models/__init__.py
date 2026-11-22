@@ -3,7 +3,7 @@
 from repair_bot.database.models.ai_assessment import RepairRequestAiAssessment
 from repair_bot.database.models.base import Base, utcnow
 from repair_bot.database.models.gift_certificate import GiftCertificate
-from repair_bot.database.models.customer_feedback import RepairComplaint, RepairRating, RequestAssignment, RequestCompletion
+from repair_bot.database.models.customer_feedback import ComplaintResolution, RepairComplaint, RepairRating, RequestAssignment, RequestCompletion
 from repair_bot.database.models.staff_edit_details import StaffEditDetails
 from repair_bot.database.models.telegram_access_code import TelegramAccessCode, LinkCodeRateLimit
 from repair_bot.database.models.ai_access import AiWallet, AiUsage, AiCreditGrant
@@ -24,7 +24,7 @@ __all__ = [
     "Base",
     "AiWallet", "AiUsage", "AiCreditGrant", "RequestLifecycle", "RequestImportBatch",
     "GiftCertificate",
-    "RequestAssignment", "RequestCompletion", "RepairRating", "RepairComplaint",
+    "RequestAssignment", "RequestCompletion", "RepairRating", "RepairComplaint", "ComplaintResolution",
     "StaffEditDetails",
     "TelegramAccessCode",
     "LinkCodeRateLimit",

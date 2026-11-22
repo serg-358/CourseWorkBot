@@ -2,7 +2,7 @@ from datetime import timedelta
 
 import pytest
 
-from repair_bot.database.crud.feedback import save_complaint, save_rating
+from repair_bot.database.crud.feedback import complaint_resolution, save_complaint, save_rating, update_complaint_resolution
 from repair_bot.database.crud.requests import create_repair_request, take_request, update_request_status
 from repair_bot.database.crud.users import create_user
 from repair_bot.database.models import RepairComplaint, RepairRating, RequestCompletion, utcnow
@@ -45,3 +45,19 @@ async def test_complaint_without_description_is_allowed_except_other(db_session)
     await update_request_status(db_session, item.id, "completed")
 
     assert await save_complaint(db_session, item.id, client.id, "quality", "")
+
+
+@pytest.mark.asyncio
+async def test_admin_resolves_complaint_in_order(db_session):
+    client = await create_user(db_session, "84001", "Клиент", "+79990000005")
+    admin = await create_user(db_session, "84002", "Администратор", "+79990000006", role="admin")
+    item = await create_repair_request(db_session, client.id, "Перегревается")
+    await update_request_status(db_session, item.id, "completed")
+    assert await save_complaint(db_session, item.id, client.id, "quality", "Нужна проверка")
+
+    assert await update_complaint_resolution(db_session, item.id, admin, "resolved", "") is None
+    reviewing = await update_complaint_resolution(db_session, item.id, admin, "in_review", "Проверяем")
+    assert reviewing and reviewing.status == "in_review"
+    resolved = await update_complaint_resolution(db_session, item.id, admin, "resolved", "Вопрос решён")
+    assert resolved and resolved.answer == "Вопрос решён"
+    assert (await complaint_resolution(db_session, item.id)).status == "resolved"

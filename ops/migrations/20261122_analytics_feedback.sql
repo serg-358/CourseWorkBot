@@ -35,4 +35,15 @@ CREATE TABLE IF NOT EXISTS repair_complaints (
 );
 CREATE INDEX IF NOT EXISTS ix_repair_complaints_master_user_id ON repair_complaints (master_user_id);
 CREATE INDEX IF NOT EXISTS ix_repair_complaints_created_at ON repair_complaints (created_at);
+CREATE TABLE IF NOT EXISTS complaint_resolutions (
+    request_id INTEGER NOT NULL PRIMARY KEY,
+    status VARCHAR(16) NOT NULL DEFAULT 'new',
+    answer TEXT NOT NULL DEFAULT '',
+    admin_user_id INTEGER,
+    admin_name VARCHAR(200) NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL,
+    FOREIGN KEY(request_id) REFERENCES repair_complaints (request_id) ON DELETE CASCADE,
+    FOREIGN KEY(admin_user_id) REFERENCES users (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS ix_complaint_resolutions_status ON complaint_resolutions (status);
 COMMIT;

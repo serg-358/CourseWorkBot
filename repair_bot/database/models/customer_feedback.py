@@ -42,3 +42,16 @@ class RepairComplaint(Base):
     master_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     master_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+class ComplaintResolution(Base):
+    """Текущее состояние рассмотрения жалобы и ответ администратора."""
+
+    __tablename__ = "complaint_resolutions"
+
+    request_id: Mapped[int] = mapped_column(ForeignKey("repair_complaints.request_id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="new", index=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    admin_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    admin_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)

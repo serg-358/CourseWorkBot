@@ -16,7 +16,7 @@ import secrets
 import time
 import sys
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
 
@@ -51,10 +51,13 @@ from repair_bot.database.crud.requests import (
 )
 from repair_bot.database.crud.feedback import (
     COMPLAINT_CATEGORIES,
+    COMPLAINT_STATUSES,
+    complaint_resolution,
     get_feedback_state,
     list_complaints,
     save_complaint,
     save_rating,
+    update_complaint_resolution,
 )
 from repair_bot.database.crud.telegram_codes import verify_telegram_code
 from repair_bot.services.staff_assessment import effective_staff_details
@@ -119,6 +122,20 @@ def format_completion_duration(seconds: float | None) -> str:
     hours, minutes = divmod(minutes, 60)
     parts = ([f"{days} д."] if days else []) + ([f"{hours} ч."] if hours else [])
     return " ".join(parts + [f"{minutes} мин."] if parts or minutes else ["0 мин."])
+
+
+def complaint_deadline(completed_at: datetime | None) -> datetime | None:
+    """Возвращает крайний срок подачи жалобы."""
+    return completed_at + timedelta(days=7) if completed_at else None
+
+
+def complaint_is_open(completed_at: datetime | None) -> bool:
+    """Проверяет срок подачи по тому же правилу, что CRUD."""
+    deadline = complaint_deadline(completed_at)
+    if deadline is None:
+        return False
+    now = datetime.now(UTC).replace(tzinfo=None) if deadline.tzinfo is None else datetime.now(UTC)
+    return now <= deadline
 WEB_DIRECTORY = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
 templates.env.globals["money"] = format_rubles
@@ -557,7 +574,7 @@ def create_app() -> FastAPI:
         urgency_max = max(urgency.values(), default=1) or 1
         urgency_rows = "".join(f"<div class='analytics-progress'><span>{label}</span><i><b style='width:{count * 100 / urgency_max:.0f}%'></b></i><strong>{count}</strong></div>" for label, count in urgency.items())
         status_legend = "".join(f"<li><i style='background:{palette[status]}'></i>{STATUSES[status]} <strong>{count}</strong></li>" for status, count in counts.items())
-        rating_rows = [ratings[item.id] for item in completed if item.id in ratings]
+        rating_rows = [row for row in ratings.values() if period_start <= moscow_day(row.created_at) <= period_end]
         rating_distribution = {score: sum(row.score == score for row in rating_rows) for score in range(1, 6)}
         rating_max = max(rating_distribution.values(), default=1) or 1
         rating_chart = "".join(f"<div class='analytics-bar rating'><b style='height:{max(8, count * 100 / rating_max):.0f}%'></b><span>{score} ★</span><small>{count}</small></div>" for score, count in rating_distribution.items())
@@ -590,17 +607,17 @@ def create_app() -> FastAPI:
         period_caption = "По дням" if len(buckets) == span else "По интервалам"
         content = ("<section class='dashboard-heading'><div><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, финансам и качеству работы.</p></div>"
                    f"<form class='analytics-period' method='get'><nav class='analytics-period-shortcuts'>{period_links}</nav><label>С<input type='date' name='from' value='{period_start}'></label><label>По<input type='date' name='to' value='{period_end}'></label><button>Показать</button><a class='button secondary' href='/admin/analytics/export?{html.escape(export_query, quote=True)}'>Скачать XLSX</a></form></section>"
-                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(selected)}</strong><small>{comparison(len(selected), len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
+                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(selected)}</strong><small>{comparison(len(selected), len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Стоимость завершённых ремонтов</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
                    f"<div class='analytics-secondary'><article><span>Средний чек</span><strong>{format_rubles(avg_check)}</strong></article><article><span>Отмены</span><strong>{cancellation_rate:.0f}%</strong></article><article><span>Средняя оценка</span><strong>{average_rating}</strong></article><article><span>Ответы клиентов</span><strong>{len(rating_rows) * 100 / max(len(completed), 1):.0f}%</strong></article><article><span>Среднее время выполнения</span><strong>{format_completion_duration(average_completion_duration)}</strong></article></div>"
                    + f"<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки {period_caption.lower()}</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + bars + "</div></section>"
-                   + f"<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Выручка {period_caption.lower()}</h2><span class='panel-caption'>По дате завершения</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + revenue_bars + "</div></section>"
+                   + f"<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Стоимость завершённых ремонтов {period_caption.lower()}</h2><span class='panel-caption'>По дате завершения</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + revenue_bars + "</div></section>"
                    + "<section class='dashboard-panel'><h2>Статусы заявок</h2><div class='analytics-donut'><svg viewBox='0 0 140 140'>" + "".join(segments) + f"<text x='70' y='66'>{len(selected)}</text><text x='70' y='84'>всего</text></svg><ul>" + status_legend + "</ul></div></section>"
                    + "<section class='dashboard-panel'><h2>Срочность</h2>" + urgency_rows + "</section>"
                    + "<section class='dashboard-panel'><h2>Оценки клиентов</h2><div class='analytics-bars compact'>" + rating_chart + "</div></section>"
                    + "<section class='dashboard-panel'><h2>Причины жалоб</h2>" + complaint_rows + "</section>"
                    + "<section class='dashboard-panel'><h2>Частые клиенты</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{count}</b></li>" for name, count in top_clients) + "</ol></section>"
-                   + "<section class='dashboard-panel'><h2>Клиенты по выручке</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{format_rubles(amount)}</b></li>" for name, amount in top_revenue_clients) + "</ol></section>"
-                   + "<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Эффективность мастеров</h2><span class='panel-caption'>Завершённые работы за период</span></div><div class='table-wrap'><table><thead><tr><th>Мастер</th><th>Ремонты</th><th>Выручка</th><th>Оценка</th><th>Жалобы</th></tr></thead><tbody>" + master_rows + "</tbody></table></div></section></div>")
+                   + "<section class='dashboard-panel'><h2>Клиенты по стоимости ремонтов</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{format_rubles(amount)}</b></li>" for name, amount in top_revenue_clients) + "</ol></section>"
+                   + "<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Эффективность мастеров</h2><span class='panel-caption'>Завершённые работы за период</span></div><div class='table-wrap'><table><thead><tr><th>Мастер</th><th>Ремонты</th><th>Стоимость ремонтов</th><th>Оценка</th><th>Жалобы</th></tr></thead><tbody>" + master_rows + "</tbody></table></div></section></div>")
         return render_page(request, "Аналитика", content)
 
     @app.get("/admin/analytics/export")
@@ -619,6 +636,8 @@ def create_app() -> FastAPI:
             items = await get_all_requests(db) + await get_all_requests(db, trash=True)
             complaints = await list_complaints(db)
             ratings = list((await db.scalars(select(RepairRating))).all())
+            completions = {row.request_id: row.completed_at for row in (await db.scalars(select(RequestCompletion))).all()}
+            assignments = {row.request_id: row for row in (await db.scalars(select(RequestAssignment))).all()}
         if shortcut_period in {"7", "30", "all"}:
             dashboard = build_dashboard_data(items, ratings, complaints, shortcut_period)
         else:
@@ -629,8 +648,33 @@ def create_app() -> FastAPI:
                 start=manual_start,
                 end=manual_end,
             )
+        completed = [item for item in items if item.status == "completed" and dashboard.period_start <= moscow_day(completions.get(item.id, item.created_at)) <= dashboard.period_end]
+        cost = sum(request_price(item) or 0 for item in completed)
+        durations = [max(0, (completions[item.id] - item.created_at).total_seconds()) for item in completed if item.id in completions]
+        ratings_by_request = {row.request_id: row for row in ratings}
+        clients: dict[str, int] = {}
+        masters: dict[str, list] = {}
+        for item in completed:
+            amount = request_price(item) or 0
+            clients[item.user.full_name] = clients.get(item.user.full_name, 0) + amount
+            name = assignments[item.id].master_name if item.id in assignments else "Не назначен"
+            stats = masters.setdefault(name, [0, 0, [], 0])
+            stats[0], stats[1] = stats[0] + 1, stats[1] + amount
+            if item.id in ratings_by_request:
+                stats[2].append(ratings_by_request[item.id].score)
+            stats[3] += sum(row.request_id == item.id for row in complaints if dashboard.period_start <= moscow_day(row.created_at) <= dashboard.period_end)
+        period_ratings = [row for row in ratings if dashboard.period_start <= moscow_day(row.created_at) <= dashboard.period_end]
+        extras = {
+            "completed_cost": cost,
+            "average_check": cost // len(completed) if completed else 0,
+            "cancellation_rate": dashboard.status_counts["cancelled"] * 100 / max(dashboard.request_count, 1),
+            "feedback_rate": len(period_ratings) * 100 / max(len(completed), 1),
+            "average_completion_duration": format_completion_duration(sum(durations) / len(durations) if durations else None),
+            "top_clients": sorted(clients.items(), key=lambda row: row[1], reverse=True)[:5],
+            "masters": [(name, values[0], values[1], sum(values[2]) / len(values[2]) if values[2] else None, values[3]) for name, values in sorted(masters.items(), key=lambda row: row[1][1], reverse=True)],
+        }
         return Response(
-            build_dashboard_xlsx(dashboard),
+            build_dashboard_xlsx(dashboard, extras=extras),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
                 "Content-Disposition": "attachment; filename=dashboard-statistics.xlsx",
@@ -646,9 +690,39 @@ def create_app() -> FastAPI:
             if account is None or user is None or user.role != "admin":
                 return forbidden_page(request)
             complaints = await list_complaints(db)
+            selected_status = request.query_params.get("status", "")
+            states = {row.request_id: await complaint_resolution(db, row.request_id) for row in complaints}
         labels = {"quality": "Качество", "timing": "Сроки", "price": "Стоимость", "communication": "Общение", "other": "Другое"}
-        rows = "".join(f"<article class='card'><h2>Заявка №{row.request_id}</h2><p>{labels.get(row.category, row.category)} · {html.escape(row.master_name)} · {row.created_at:%d.%m.%Y}</p><p>{html.escape(row.message) or 'Без комментария'}</p><a href='/requests/{row.request_id}'>Открыть заявку →</a></article>" for row in complaints)
-        return render_page(request, "Жалобы", "<section class='dashboard-heading'><h1>Жалобы</h1><p>Обращения клиентов по завершённым ремонтам.</p></section>" + (rows or "<section class='card'><p>Жалоб пока нет.</p></section>"))
+        if selected_status in COMPLAINT_STATUSES:
+            complaints = [row for row in complaints if (states[row.request_id].status if states[row.request_id] else "new") == selected_status]
+        names = {"new": "Новая", "in_review": "Рассматривается", "resolved": "Решена"}
+        csrf = csrf_token(request)
+        rows = []
+        for row in complaints:
+            state = states[row.request_id]
+            status = state.status if state else "new"
+            choices = {"new": (("in_review", "Рассматривается"),), "in_review": (("in_review", "Рассматривается"), ("resolved", "Решена")), "resolved": (("resolved", "Решена"),)}[status]
+            options = "".join(f"<option value='{value}'>{label}</option>" for value, label in choices)
+            answer = html.escape(state.answer if state else "")
+            rows.append(f"<article class='card'><h2>Заявка №{row.request_id} · {names[status]}</h2><p>{labels.get(row.category, row.category)} · {html.escape(row.master_name)} · {row.created_at:%d.%m.%Y}</p><p>{html.escape(row.message) or 'Без комментария'}</p><form method='post' action='/admin/complaints/{row.request_id}'><input type='hidden' name='csrf' value='{csrf}'><label>Статус<select name='status'>{options}</select></label><label>Ответ клиенту<textarea name='answer' maxlength='3000'>{answer}</textarea></label><button>Сохранить и уведомить</button></form><a href='/requests/{row.request_id}'>Открыть заявку →</a></article>")
+        filters = "<nav class='user-role-tabs'><a href='/admin/complaints'>Все</a><a href='/admin/complaints?status=new'>Новые</a><a href='/admin/complaints?status=in_review'>Рассматриваются</a><a href='/admin/complaints?status=resolved'>Решённые</a></nav>"
+        return render_page(request, "Жалобы", "<section class='dashboard-heading'><h1>Жалобы</h1><p>Обращения клиентов по завершённым ремонтам.</p></section>" + filters + ("".join(rows) or "<section class='card'><p>Жалоб пока нет.</p></section>"))
+
+    @app.post("/admin/complaints/{request_id}")
+    async def resolve_complaint(request: Request, request_id: int) -> Response:
+        form = await read_form(request)
+        if not verify_csrf(request, form):
+            return forbidden_page(request)
+        async with SessionLocal() as db:
+            account, admin = await identity(request, db)
+            if account is None or admin is None or admin.role != "admin":
+                return forbidden_page(request)
+            resolution = await update_complaint_resolution(db, request_id, admin, form.get("status", ""), form.get("answer", "").strip())
+            item = await get_repair_request(db, request_id)
+        if resolution is None or item is None:
+            return error_page(request, "Статус жалобы нельзя изменить этим действием.", "/admin/complaints")
+        await notify_client_complaint(item.user.telegram_id, request_id, resolution.status, resolution.answer)
+        return RedirectResponse("/admin/complaints", status_code=303)
 
     @app.post("/admin/users/{user_id}/role")
     async def admin_change_role(request: Request, user_id: int) -> Response:
@@ -851,7 +925,9 @@ def create_app() -> FastAPI:
             view = effective_view(request, user)
             address = await db.scalar(select(RequestAddress).where(RequestAddress.request_id == request_id))
             assignment = await db.get(RequestAssignment, request_id)
+            completion = await db.get(RequestCompletion, request_id)
             rating_score, has_complaint = await get_feedback_state(db, request_id)
+            resolution = await complaint_resolution(db, request_id) if has_complaint else None
             text = admin_request_text(item) if view in {"admin", "master"} else client_request_text(item)
             photo = (
                 f"<img class='request-photo' src='/requests/{item.id}/photo?view={view}' alt='Фотография к заявке №{item.id}'>"
@@ -883,9 +959,17 @@ def create_app() -> FastAPI:
                 else:
                     content += f"<section class='card'><h2>Оценка уже оставлена</h2><p>Вы оценили ремонт на {rating_score} из 5.</p></section>"
                 if not has_complaint:
-                    content += f"<section class='card'><h2>Оставить жалобу</h2><form method='post' action='/requests/{item.id}/complaint?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
+                    deadline = complaint_deadline(completion.completed_at if completion else None)
+                    if deadline is None or complaint_is_open(completion.completed_at if completion else None):
+                        deadline_text = f"Подать жалобу можно до {deadline:%d.%m.%Y %H:%M} (семь дней после завершения ремонта)." if deadline else "Срок подачи жалобы будет рассчитан после фиксации завершения ремонта."
+                        content += f"<section class='card'><h2>Оставить жалобу</h2><p>{deadline_text}</p><form method='post' action='/requests/{item.id}/complaint?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
+                    else:
+                        content += f"<section class='card'><h2>Срок подачи жалобы завершён</h2><p>Жалобу можно было отправить до {deadline:%d.%m.%Y %H:%M}.</p></section>" if deadline else "<section class='card'><h2>Жалобу пока нельзя отправить</h2></section>"
                 else:
-                    content += "<section class='card'><h2>Жалоба уже оставлена</h2><p>Обращение передано администраторам.</p></section>"
+                    names = {"new": "Новая", "in_review": "Рассматривается", "resolved": "Решена"}
+                    status = resolution.status if resolution else "new"
+                    answer = html.escape(resolution.answer) if resolution and resolution.answer else "Ответ администратора пока не добавлен."
+                    content += f"<section class='card'><h2>Жалоба уже оставлена</h2><p>Статус: {names[status]}. Обращение передано администраторам.</p><p><strong>Ответ администратора:</strong> {answer}</p></section>"
             if not deleted and item.status in {"new", "in_progress"} and not request_photo_id(item):
                 content += f"<form method='post' enctype='multipart/form-data' action='/requests/{item.id}/photo' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><h2>Добавить фотографию</h2><label>Фото неисправности<input name='photo' type='file' accept='image/jpeg,image/png,image/webp' required></label><p>JPG, PNG или WebP до 5 МБ. Фото получит мастер; готовая AI-оценка не перезаписывается.</p><button>Сохранить фото</button></form>"
             return render_page(request, request_title(item), content + "</article>")
@@ -1306,6 +1390,24 @@ async def notify_client_status(
         )
     except (TelegramAPIError, ValueError):
         logger.info("Не удалось отправить уведомление для заявки №%s.", request_id)
+    finally:
+        if bot is not None:
+            await bot.session.close()
+
+
+async def notify_client_complaint(telegram_id: str, request_id: int, status: str, answer: str) -> None:
+    """Уведомляет клиента о рассмотрении жалобы, не отменяя сохранённый ответ."""
+    token = os.getenv("BOT_TOKEN")
+    labels = {"new": "Новая", "in_review": "Рассматривается", "resolved": "Решена"}
+    if not token or status not in labels:
+        return
+    bot = None
+    try:
+        bot = Bot(token=token)
+        suffix = f"\nОтвет администратора: {answer}" if answer else ""
+        await bot.send_message(telegram_id, f"⚠️ Жалоба по заявке №{request_id}: {labels[status]}.{suffix}")
+    except (TelegramAPIError, ValueError):
+        logger.info("Не удалось уведомить клиента о жалобе по заявке №%s.", request_id)
     finally:
         if bot is not None:
             await bot.session.close()

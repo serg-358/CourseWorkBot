@@ -16,7 +16,9 @@ from repair_bot.keyboards import main_menu_keyboard
 from repair_bot.services.admin_dashboard import (
     build_dashboard_data,
     build_dashboard_xlsx,
+    dashboard_detail_message,
     dashboard_message,
+    format_completion_duration,
     moscow_day,
 )
 from repair_bot.web.workspace import request_price
@@ -53,14 +55,50 @@ def dashboard_keyboard(telegram_id: int, period: str) -> InlineKeyboardMarkup:
         )
         for value, label in labels
     ]
-    menu = menu_for_user(telegram_id, "admin")
-    export = [
+    details = [
+        InlineKeyboardButton(text="Динамика", callback_data=f"menu:dashboard:view:dynamics:{period}"),
+        InlineKeyboardButton(text="Стоимость ремонтов", callback_data=f"menu:dashboard:view:cost:{period}"),
+    ]
+    details_second = [
+        InlineKeyboardButton(text="Оценки и жалобы", callback_data=f"menu:dashboard:view:feedback:{period}"),
+        InlineKeyboardButton(text="Мастера", callback_data=f"menu:dashboard:view:masters:{period}"),
+    ]
+    actions = [
+        InlineKeyboardButton(text="🔄 Обновить", callback_data=f"menu:dashboard:{period}"),
         InlineKeyboardButton(
             text="⬇️ Скачать XLSX",
             callback_data=f"menu:dashboard:export:{period}",
-        )
+        ),
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[periods, export, *menu.inline_keyboard])
+    return InlineKeyboardMarkup(inline_keyboard=[periods, details, details_second, actions, [InlineKeyboardButton(text="← Главное меню", callback_data="menu:profile")]])
+
+
+def dashboard_export_extras(dashboard, requests, ratings, complaints, completions, assignments) -> dict[str, object]:
+    """Готовит для XLSX те же финансовые строки, что видит администратор."""
+    completed = [item for item in requests if item.status == "completed" and dashboard.period_start <= moscow_day(completions.get(item.id, item.created_at)) <= dashboard.period_end]
+    cost = sum(request_price(item) or 0 for item in completed)
+    durations = [max(0, (completions[item.id] - item.created_at).total_seconds()) for item in completed if item.id in completions]
+    ratings_by_request = {row.request_id: row for row in ratings}
+    clients: dict[str, int] = {}
+    masters: dict[str, list] = {}
+    for item in completed:
+        amount = request_price(item) or 0
+        clients[item.user.full_name] = clients.get(item.user.full_name, 0) + amount
+        name = assignments[item.id].master_name if item.id in assignments else "Не назначен"
+        stats = masters.setdefault(name, [0, 0, [], 0])
+        stats[0], stats[1] = stats[0] + 1, stats[1] + amount
+        if item.id in ratings_by_request:
+            stats[2].append(ratings_by_request[item.id].score)
+        stats[3] += sum(row.request_id == item.id for row in complaints if dashboard.period_start <= moscow_day(row.created_at) <= dashboard.period_end)
+    return {
+        "completed_cost": cost,
+        "average_check": cost // len(completed) if completed else 0,
+        "cancellation_rate": dashboard.status_counts["cancelled"] * 100 / max(dashboard.request_count, 1),
+        "feedback_rate": sum(dashboard.period_start <= moscow_day(row.created_at) <= dashboard.period_end for row in ratings) * 100 / max(len(completed), 1),
+        "average_completion_duration": format_completion_duration(sum(durations) / len(durations) if durations else None),
+        "top_clients": sorted(clients.items(), key=lambda row: row[1], reverse=True)[:5],
+        "masters": [(name, values[0], values[1], sum(values[2]) / len(values[2]) if values[2] else None, values[3]) for name, values in sorted(masters.items(), key=lambda row: row[1][1], reverse=True)],
+    }
 
 @router.callback_query(F.data.startswith("menu:users"))
 async def show_users(callback: CallbackQuery, state: FSMContext) -> None:
@@ -157,10 +195,18 @@ async def export_dashboard(callback: CallbackQuery) -> None:
         requests = await get_all_requests(db) + await get_all_requests(db, trash=True)
         complaints = await list_complaints(db)
         ratings = list((await db.scalars(select(RepairRating))).all())
+        completions = {row.request_id: row.completed_at for row in (await db.scalars(select(RequestCompletion))).all()}
+        assignments = {row.request_id: row for row in (await db.scalars(select(RequestAssignment))).all()}
     await callback.answer("Готовлю XLSX…")
     if callback.message:
         await callback.message.answer_document(
-            BufferedInputFile(build_dashboard_xlsx(build_dashboard_data(requests, ratings, complaints, period)), filename=f"dashboard-{period}.xlsx"),
+            BufferedInputFile(
+                build_dashboard_xlsx(
+                    build_dashboard_data(requests, ratings, complaints, period),
+                    extras=dashboard_export_extras(build_dashboard_data(requests, ratings, complaints, period), requests, ratings, complaints, completions, assignments),
+                ),
+                filename=f"dashboard-{period}.xlsx",
+            ),
             caption=f"Статистика дашборда · {period}.",
         )
 
@@ -173,8 +219,10 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
     await state.clear()
-    period = (callback.data or "").rsplit(":", 1)[-1]
+    parts = (callback.data or "").split(":")
+    period = parts[-1]
     period = period if period in DASHBOARD_PERIODS else "7"
+    section = parts[-2] if len(parts) >= 5 and parts[-3] == "view" else "summary"
 
     async with SessionLocal() as db:
         admin = await get_user_by_telegram_id(db, str(callback.from_user.id))
@@ -236,18 +284,13 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
         (name, stats[0], stats[1], sum(stats[2]) / len(stats[2]) if stats[2] else None, stats[3])
         for name, stats in sorted(master_stats.items(), key=lambda row: row[1][1], reverse=True)[:5]
     ]
-    clients = sum(user.role == "client" for user in users)
-    admins = sum(user.role == "admin" for user in users)
     await callback.answer()
     if callback.message:
         await edit_callback_screen(
             callback,
-            dashboard_message(
+            dashboard_message(dashboard) if section == "summary" else dashboard_detail_message(
+                section,
                 dashboard,
-                users_total=len(users),
-                clients=clients,
-                masters=sum(user.role == "master" for user in users),
-                admins=admins,
                 revenue_kopecks=revenue,
                 average_check_kopecks=revenue // len(completed) if completed else 0,
                 cancellation_rate=dashboard.status_counts["cancelled"] * 100 / max(dashboard.request_count, 1),

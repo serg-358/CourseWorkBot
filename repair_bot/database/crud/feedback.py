@@ -5,9 +5,10 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repair_bot.database.models import RepairComplaint, RepairRating, RequestAssignment, RequestCompletion, RepairRequest, utcnow
+from repair_bot.database.models import ComplaintResolution, RepairComplaint, RepairRating, RequestAssignment, RequestCompletion, RepairRequest, User, utcnow
 
 COMPLAINT_CATEGORIES = {"quality", "timing", "price", "communication", "other"}
+COMPLAINT_STATUSES = {"new", "in_review", "resolved"}
 
 
 async def get_feedback_state(db: AsyncSession, request_id: int) -> tuple[int | None, bool]:
@@ -43,3 +44,29 @@ async def save_complaint(db: AsyncSession, request_id: int, user_id: int, catego
 
 async def list_complaints(db: AsyncSession) -> list[RepairComplaint]:
     return list((await db.scalars(select(RepairComplaint).order_by(RepairComplaint.created_at.desc()))).all())
+
+
+async def complaint_resolution(db: AsyncSession, request_id: int) -> ComplaintResolution | None:
+    """Возвращает состояние жалобы; старые обращения считаются новыми."""
+    return await db.get(ComplaintResolution, request_id)
+
+
+async def update_complaint_resolution(
+    db: AsyncSession, request_id: int, admin: User, status: str, answer: str
+) -> ComplaintResolution | None:
+    """Сохраняет допустимый следующий статус и единый ответ администратора."""
+    current = await db.get(ComplaintResolution, request_id)
+    current_status = current.status if current else "new"
+    allowed = {"new": {"in_review"}, "in_review": {"in_review", "resolved"}, "resolved": {"resolved"}}
+    if status not in COMPLAINT_STATUSES or status not in allowed[current_status] or len(answer) > 3000:
+        return None
+    if current is None:
+        current = ComplaintResolution(request_id=request_id)
+        db.add(current)
+    current.status = status
+    current.answer = answer
+    current.admin_user_id = admin.id
+    current.admin_name = admin.full_name
+    current.updated_at = utcnow()
+    await db.commit()
+    return current

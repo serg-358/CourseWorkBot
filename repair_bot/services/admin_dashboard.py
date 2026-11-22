@@ -110,10 +110,10 @@ def build_dashboard_data(requests: Iterable, ratings: Iterable, complaints: Iter
 def dashboard_message(
     data: DashboardData,
     *,
-    users_total: int,
-    clients: int,
-    masters: int,
-    admins: int,
+    users_total: int = 0,
+    clients: int = 0,
+    masters: int = 0,
+    admins: int = 0,
     revenue_kopecks: int = 0,
     average_check_kopecks: int = 0,
     cancellation_rate: float = 0,
@@ -122,7 +122,29 @@ def dashboard_message(
     top_clients: list[tuple[str, int]] | None = None,
     master_rows: list[tuple[str, int, int, float | None, int]] | None = None,
 ) -> str:
-    """Формирует подробную, но компактную сводку для Telegram."""
+    """Формирует краткий первый экран Telegram-дашборда."""
+    return (
+        f"📊 <b>Дашборд мастерской</b> · {data.label}\n🗓 {data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}\n\n"
+        f"🧾 Заявки: <b>{data.request_count}</b>\n"
+        f"🆕 Новые: <b>{data.status_counts['new']}</b> · ✅ Завершены: <b>{data.status_counts['completed']}</b>\n"
+        f"⭐ Средняя оценка: <b>{f'{data.average_rating:.1f}' if data.average_rating is not None else '—'}</b>\n"
+        f"⚠️ Жалобы: <b>{sum(data.complaint_counts.values())}</b>"
+    )
+
+
+def dashboard_detail_message(
+    section: str,
+    data: DashboardData,
+    *,
+    revenue_kopecks: int = 0,
+    average_check_kopecks: int = 0,
+    cancellation_rate: float = 0,
+    feedback_rate: float = 0,
+    average_completion_duration: float | None = None,
+    top_clients: list[tuple[str, int]] | None = None,
+    master_rows: list[tuple[str, int, int, float | None, int]] | None = None,
+) -> str:
+    """Формирует один подробный раздел Telegram-дашборда."""
     timeline = "\n".join(f"• {label}: {count}" for label, count in zip(data.timeline_labels, data.timeline_counts, strict=True))
     ratings = " · ".join(f"{score}★: {count}" for score, count in data.rating_counts.items())
     complaints = " · ".join(f"{COMPLAINT_LABELS[category]}: {count}" for category, count in data.complaint_counts.items())
@@ -134,19 +156,14 @@ def dashboard_message(
         _master_line(name, count, revenue, rating, complaints_count)
         for name, count, revenue, rating, complaints_count in (master_rows or [])[:5]
     ) or "• Нет завершённых ремонтов"
-    return (
-        f"📊 <b>Дашборд мастерской</b> · {data.label}\n🗓 {data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}\n\n"
-        f"👥 Пользователи: {users_total} (клиенты: {clients}, мастера: {masters}, администраторы: {admins})\n\n"
-        f"🧾 Заявки: {data.request_count}\n   Новые: {data.status_counts['new']} · В работе: {data.status_counts['in_progress']}\n"
-        f"   Завершены: {data.status_counts['completed']} · Отменены: {data.status_counts['cancelled']}\n"
-        f"   В корзине: {data.trash_count}\n   Обычные: {data.priority_counts['low']} · Срочные: {data.priority_counts['medium']} · Критические: {data.priority_counts['high']}\n\n"
-        f"📈 <b>Заявки по интервалам</b>\n{timeline}\n\n⭐ Средняя оценка: {f'{data.average_rating:.1f}' if data.average_rating is not None else '—'}\n"
-        f"   {ratings}\n⚠️ Жалобы: {sum(data.complaint_counts.values())}\n   {complaints}\n\n"
-        f"💰 <b>Финансы и скорость</b>\nВыручка: {_format_rubles(revenue_kopecks)} · Средний чек: {_format_rubles(average_check_kopecks)}\n"
-        f"Отмены: {cancellation_rate:.0f}% · Ответы: {feedback_rate:.0f}%\n"
-        f"Среднее выполнение: {format_completion_duration(average_completion_duration)}\n\n"
-        f"👤 <b>Клиенты по выручке</b>\n{clients_text}\n\n🛠 <b>Мастера</b>\n{masters_text}"
-    )
+    heading = f"📊 <b>Дашборд мастерской</b> · {data.label}\n\n"
+    if section == "dynamics":
+        return heading + f"📈 <b>Динамика заявок</b>\n{timeline}\n\nСтатусы: новые {data.status_counts['new']} · в работе {data.status_counts['in_progress']} · отменены {data.status_counts['cancelled']}"
+    if section == "cost":
+        return heading + f"💰 <b>Стоимость завершённых ремонтов</b>\n{_format_rubles(revenue_kopecks)}\nСредний чек: {_format_rubles(average_check_kopecks)}\nОтмены: {cancellation_rate:.0f}%\nСреднее выполнение: {format_completion_duration(average_completion_duration)}\n\n👤 <b>Клиенты по стоимости</b>\n{clients_text}"
+    if section == "feedback":
+        return heading + f"⭐ <b>Оценки и жалобы</b>\nСредняя оценка: {f'{data.average_rating:.1f}' if data.average_rating is not None else '—'}\n{ratings}\nОтветы клиентов: {feedback_rate:.0f}%\n\n⚠️ Жалобы: {sum(data.complaint_counts.values())}\n{complaints}"
+    return heading + f"🛠 <b>Мастера</b>\n{masters_text}"
 
 
 def _format_rubles(kopecks: int) -> str:
@@ -158,7 +175,7 @@ def _master_line(name: str, count: int, revenue: int, rating: float | None, comp
     return f"• {html.escape(name[:24])}: {count} шт., {_format_rubles(revenue)}, оценка {rating_text}, жалобы {complaints}"
 
 
-def build_dashboard_xlsx(data: DashboardData) -> bytes:
+def build_dashboard_xlsx(data: DashboardData, *, extras: dict[str, object] | None = None) -> bytes:
     """Создаёт XLSX-выгрузку тех же показателей, что видит администратор."""
     from openpyxl import Workbook
     from openpyxl.styles import Font
@@ -166,7 +183,8 @@ def build_dashboard_xlsx(data: DashboardData) -> bytes:
     workbook = Workbook()
     summary = workbook.active
     summary.title = "Сводка"
-    for row in (("Дашборд мастерской",), ("Период", f"{data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}"), ("Заявки", data.request_count), ("В корзине", data.trash_count), ("Средняя оценка", data.average_rating)):
+    extras = extras or {}
+    for row in (("Дашборд мастерской",), ("Период", f"{data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}"), ("Заявки", data.request_count), ("В корзине", data.trash_count), ("Средняя оценка", data.average_rating), ("Стоимость завершённых ремонтов", extras.get("completed_cost", 0)), ("Средний чек", extras.get("average_check", 0)), ("Отмены, %", extras.get("cancellation_rate")), ("Ответы клиентов, %", extras.get("feedback_rate")), ("Среднее выполнение", extras.get("average_completion_duration", "—"))):
         summary.append(row)
     summary["A1"].font = Font(bold=True, size=14)
     summary.column_dimensions["A"].width, summary.column_dimensions["B"].width = 24, 22
@@ -175,6 +193,8 @@ def build_dashboard_xlsx(data: DashboardData) -> bytes:
     _append_table(workbook, "Срочность", ("Срочность", "Количество"), ((PRIORITY_LABELS[key], value) for key, value in data.priority_counts.items()))
     _append_table(workbook, "Оценки", ("Оценка", "Количество"), data.rating_counts.items())
     _append_table(workbook, "Жалобы", ("Категория", "Количество"), ((COMPLAINT_LABELS[key], value) for key, value in data.complaint_counts.items()))
+    _append_table(workbook, "Клиенты по стоимости", ("Клиент", "Стоимость завершённых ремонтов"), extras.get("top_clients", []))
+    _append_table(workbook, "Мастера", ("Мастер", "Ремонты / стоимость / оценка / жалобы"), ((name, f"{count} / {_format_rubles(cost)} / {rating if rating is not None else '—'} / {complaints}") for name, count, cost, rating, complaints in extras.get("masters", [])))
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()

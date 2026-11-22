@@ -242,7 +242,7 @@ async def test_admin_complaints_screen_shows_empty_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_admin_dashboard_updates_detailed_message_without_chart(monkeypatch):
+async def test_admin_dashboard_updates_compact_message_without_chart(monkeypatch):
     class Session:
         async def __aenter__(self):
             return self
@@ -285,7 +285,8 @@ async def test_admin_dashboard_updates_detailed_message_without_chart(monkeypatc
     await admin.show_dashboard(callback, state)
 
     assert "Дашборд мастерской" in message.edit_text.await_args.args[0]
-    assert "Заявки по интервалам" in message.edit_text.await_args.args[0]
+    assert "Средняя оценка" in message.edit_text.await_args.args[0]
+    assert "Заявки по интервалам" not in message.edit_text.await_args.args[0]
 
 
 @pytest.mark.asyncio
