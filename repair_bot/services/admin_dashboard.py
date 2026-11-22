@@ -218,3 +218,4 @@ def _append_table(workbook, title: str, headers: tuple[str, str], rows: Iterable
             if isinstance(cell.value, (int, float)) or cell.column == 2:
                 cell.alignment = Alignment(horizontal="right")
     sheet.column_dimensions["A"].width, sheet.column_dimensions["B"].width = 28, 16
+
