@@ -1,6 +1,7 @@
 """Обработчики раздела staff requests."""
 
 import re
+from sqlalchemy import select
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F
@@ -14,6 +15,7 @@ from repair_bot.database.crud.requests import (
     update_request_status,
     take_request,
 )
+from repair_bot.database.models import RequestAssignment
 from repair_bot.database.crud.users import get_user_by_telegram_id
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import dialog_keyboard, request_navigation_keyboard
@@ -35,6 +37,13 @@ from aiogram import Router
 router = Router(name="staff_requests")
 logger = logging.getLogger(__name__)
 
+
+async def assigned_request_ids(db) -> set[int]:
+    """Возвращает идентификаторы уже принятых заявок."""
+    if not hasattr(db, "scalars"):
+        return set()
+    return set((await db.scalars(select(RequestAssignment.request_id))).all())
+
 @router.callback_query(F.data == "menu:all_requests")
 @router.callback_query(F.data.startswith("requests:staff:"))
 async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
@@ -51,6 +60,7 @@ async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer("🔒 Нет прав для просмотра заявок.", show_alert=True)
             return
         requests = await get_all_requests(db)
+        taken_ids = await assigned_request_ids(db)
 
     try:
         requested_page = int((callback.data or "").rsplit(":", 1)[-1]) if callback.data != "menu:all_requests" else 0
@@ -83,7 +93,8 @@ async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
                 request_photo_id(request)
             ),
             can_edit_assessment=True,
-            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"},
+            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"} and request.id not in taken_ids,
+            is_taken=request.id in taken_ids,
         ),
         parse_mode="HTML",
     )
@@ -175,6 +186,7 @@ async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
         async with SessionLocal() as db:
             requests = await get_all_requests(db)
             role_user = await get_user_by_telegram_id(db, str(callback.from_user.id))
+            taken_ids = await assigned_request_ids(db)
         page = next((index for index, item in enumerate(requests) if item.id == request.id), 0)
         total_pages = max(1, len(requests))
         role = role_user.role if role_user and role_user.role in {"admin", "master"} else "master"
@@ -192,7 +204,8 @@ async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
                     request_photo_id(request)
                 ),
             can_edit_assessment=True,
-            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"},
+            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"} and request.id not in taken_ids,
+            is_taken=request.id in taken_ids,
             ),
             parse_mode="HTML",
         )
@@ -380,6 +393,7 @@ async def process_staff_price(message: Message, state: FSMContext) -> None:
         )
         role = editor.role
         requests = await get_all_requests(db)
+        taken_ids = await assigned_request_ids(db)
     if saved_edit is None:
         await state.clear()
         await message.answer("📭 Заявка не найдена или больше недоступна.")
@@ -407,7 +421,8 @@ async def process_staff_price(message: Message, state: FSMContext) -> None:
                 request_photo_id(request)
             ),
             can_edit_assessment=True,
-            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"},
+            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"} and request.id not in taken_ids,
+            is_taken=request.id in taken_ids,
         ),
         parse_mode="HTML",
     )

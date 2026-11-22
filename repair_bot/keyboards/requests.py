@@ -59,6 +59,7 @@ def request_navigation_keyboard(
     can_rate: bool = False,
     can_complain: bool = False,
     can_take: bool = False,
+    is_taken: bool = False,
 ) -> InlineKeyboardMarkup:
     """Объединяет листание заявки, действия сотрудника и основное меню."""
     callback_prefix = f"requests:{view}"
@@ -83,6 +84,8 @@ def request_navigation_keyboard(
         rows.append([InlineKeyboardButton(text="🔎 Выполнить доступную AI-диагностику", callback_data=f"request:ai:{request_id}")])
     if request_id is not None and can_take:
         rows.append([InlineKeyboardButton(text="🔧 Взять в работу", callback_data=f"request:take:{request_id}")])
+    elif request_id is not None and is_taken and view == "staff":
+        rows.append([InlineKeyboardButton(text="✅ Заявка уже в работе", callback_data=f"requests:page-info:{page + 1}:{total_pages}")])
     if request_id is not None and current_status is not None:
         rows.extend(request_status_keyboard(request_id, current_status).inline_keyboard)
     if request_id is not None and has_photo:

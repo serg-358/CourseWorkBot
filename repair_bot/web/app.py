@@ -61,6 +61,9 @@ from repair_bot.database.models import (
     SiteText,
     User,
     WebsiteAccount,
+    RequestAssignment,
+    RequestCompletion,
+    RepairRating,
 )
 from repair_bot.database.session import SessionLocal, create_tables
 from repair_bot.handlers.common import (
@@ -464,36 +467,96 @@ def create_app() -> FastAPI:
                 return forbidden_page(request)
             items = await get_all_requests(db)
             complaints = await list_complaints(db)
-        completed = [item for item in items if item.status == "completed"]
+            completions = {row.request_id: row.completed_at for row in (await db.scalars(select(RequestCompletion))).all()}
+            ratings = {row.request_id: row for row in (await db.scalars(select(RepairRating))).all()}
+            assignments = {row.request_id: row for row in (await db.scalars(select(RequestAssignment))).all()}
+        last_day = max((item.created_at.date() for item in items), default=date.today())
+        try:
+            period_end = date.fromisoformat(request.query_params.get("to", ""))
+        except ValueError:
+            period_end = last_day
+        try:
+            period_start = date.fromisoformat(request.query_params.get("from", ""))
+        except ValueError:
+            period_start = period_end - timedelta(days=6)
+        if period_start > period_end:
+            period_start, period_end = period_end, period_start
+        span = (period_end - period_start).days + 1
+        selected = [item for item in items if period_start <= item.created_at.date() <= period_end]
+        completed = [item for item in items if item.status == "completed" and period_start <= completions.get(item.id, item.created_at).date() <= period_end]
         revenue = sum(request_price(item) or 0 for item in completed)
-        counts = {status: sum(item.status == status for item in items) for status in STATUSES}
+        previous_start, previous_end = period_start - timedelta(days=span), period_start - timedelta(days=1)
+        previous = [item for item in items if previous_start <= item.created_at.date() <= previous_end]
+        previous_revenue = sum(request_price(item) or 0 for item in items if item.status == "completed" and previous_start <= completions.get(item.id, item.created_at).date() <= previous_end)
+        counts = {status: sum(item.status == status for item in selected) for status in STATUSES}
         client_counts = {}
-        for item in items:
+        for item in selected:
             client_counts[item.user.full_name] = client_counts.get(item.user.full_name, 0) + 1
         top_clients = sorted(client_counts.items(), key=lambda row: row[1], reverse=True)[:5]
-        last_day = max((item.created_at.date() for item in items), default=date.today())
-        days = [last_day - timedelta(days=offset) for offset in range(6, -1, -1)]
-        daily = [sum(item.created_at.date() == day for item in items) for day in days]
+        client_revenue = {}
+        for item in completed:
+            client_revenue[item.user.full_name] = client_revenue.get(item.user.full_name, 0) + (request_price(item) or 0)
+        top_revenue_clients = sorted(client_revenue.items(), key=lambda row: row[1], reverse=True)[:5]
+        days = [period_start + timedelta(days=offset) for offset in range(span)]
+        daily = [sum(item.created_at.date() == day for item in selected) for day in days]
+        daily_revenue = [sum((request_price(item) or 0) for item in completed if completions.get(item.id, item.created_at).date() == day) for day in days]
         maximum = max(daily, default=1) or 1
         bars = "".join(f"<div class='analytics-bar'><b style='height:{max(8, count * 100 / maximum):.0f}%'></b><span>{day:%d.%m}</span><small>{count}</small></div>" for day, count in zip(days, daily))
+        revenue_max = max(daily_revenue, default=1) or 1
+        revenue_bars = "".join(f"<div class='analytics-bar revenue'><b style='height:{max(8, amount * 100 / revenue_max):.0f}%'></b><span>{day:%d.%m}</span><small>{format_rubles(amount)}</small></div>" for day, amount in zip(days, daily_revenue))
         palette = {"new": "#78a6ff", "in_progress": "#3ddc97", "completed": "#b18cff", "cancelled": "#ff8a80"}
-        total = max(len(items), 1)
+        total = max(len(selected), 1)
         offset = 0.0
         segments = []
         for status, count in counts.items():
             length = count / total * 100
             segments.append(f"<circle cx='70' cy='70' r='52' pathLength='100' stroke='{palette[status]}' stroke-dasharray='{length} {100 - length}' stroke-dashoffset='{-offset}'/>")
             offset += length
-        urgency = {"Обычная": sum(selected_priority(item) == "low" for item in items), "Срочная": sum(selected_priority(item) == "medium" for item in items), "Критическая": sum(selected_priority(item) == "high" for item in items)}
+        urgency = {"Обычная": sum(selected_priority(item) == "low" for item in selected), "Срочная": sum(selected_priority(item) == "medium" for item in selected), "Критическая": sum(selected_priority(item) == "high" for item in selected)}
         urgency_max = max(urgency.values(), default=1) or 1
         urgency_rows = "".join(f"<div class='analytics-progress'><span>{label}</span><i><b style='width:{count * 100 / urgency_max:.0f}%'></b></i><strong>{count}</strong></div>" for label, count in urgency.items())
         status_legend = "".join(f"<li><i style='background:{palette[status]}'></i>{STATUSES[status]} <strong>{count}</strong></li>" for status, count in counts.items())
-        content = ("<section class='dashboard-heading'><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, загрузке и качеству работы.</p></section>"
-                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(items)}</strong></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
-                   + "<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки за 7 дней</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars'>" + bars + "</div></section>"
-                   + "<section class='dashboard-panel'><h2>Статусы заявок</h2><div class='analytics-donut'><svg viewBox='0 0 140 140'>" + "".join(segments) + f"<text x='70' y='66'>{len(items)}</text><text x='70' y='84'>всего</text></svg><ul>" + status_legend + "</ul></div></section>"
+        rating_rows = [ratings[item.id] for item in completed if item.id in ratings]
+        rating_distribution = {score: sum(row.score == score for row in rating_rows) for score in range(1, 6)}
+        rating_max = max(rating_distribution.values(), default=1) or 1
+        rating_chart = "".join(f"<div class='analytics-bar rating'><b style='height:{max(8, count * 100 / rating_max):.0f}%'></b><span>{score} ★</span><small>{count}</small></div>" for score, count in rating_distribution.items())
+        complaints = [row for row in complaints if period_start <= row.created_at.date() <= period_end]
+        complaint_labels = {"quality": "Качество", "timing": "Сроки", "price": "Стоимость", "communication": "Общение", "other": "Другое"}
+        complaint_counts = {key: sum(row.category == key for row in complaints) for key in complaint_labels}
+        complaint_max = max(complaint_counts.values(), default=1) or 1
+        complaint_rows = "".join(f"<div class='analytics-progress'><span>{label}</span><i><b style='width:{count * 100 / complaint_max:.0f}%'></b></i><strong>{count}</strong></div>" for key, label in complaint_labels.items() for count in [complaint_counts[key]])
+        master_stats = {}
+        for item in completed:
+            assignment = assignments.get(item.id)
+            name = assignment.master_name if assignment else "Не назначен"
+            stats = master_stats.setdefault(name, [0, 0, [], 0])
+            stats[0] += 1
+            stats[1] += request_price(item) or 0
+            if item.id in ratings:
+                stats[2].append(ratings[item.id].score)
+            stats[3] += sum(row.request_id == item.id for row in complaints)
+        master_rows = "".join(
+            f"<tr><td>{html.escape(name)}</td><td>{stats[0]}</td><td>{format_rubles(stats[1])}</td><td>{f'{sum(stats[2]) / len(stats[2]):.1f}' if stats[2] else '—'}</td><td>{stats[3]}</td></tr>"
+            for name, stats in sorted(master_stats.items(), key=lambda row: row[1][1], reverse=True)
+        )
+        avg_check = revenue // len(completed) if completed else 0
+        cancellation_rate = counts["cancelled"] * 100 / total
+        average_rating = f"{sum(row.score for row in rating_rows) / len(rating_rows):.1f}" if rating_rows else "—"
+        def comparison(current: int, previous_value: int) -> str:
+            return "—" if not previous_value else f"{(current - previous_value) * 100 / previous_value:+.0f}%"
+        content = ("<section class='dashboard-heading'><div><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, финансам и качеству работы.</p></div>"
+                   f"<form class='analytics-period' method='get'><label>С<input type='date' name='from' value='{period_start}'></label><label>По<input type='date' name='to' value='{period_end}'></label><button>Показать</button></form></section>"
+                   f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(selected)}</strong><small>{comparison(len(selected), len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
+                   f"<div class='analytics-secondary'><article><span>Средний чек</span><strong>{format_rubles(avg_check)}</strong></article><article><span>Отмены</span><strong>{cancellation_rate:.0f}%</strong></article><article><span>Средняя оценка</span><strong>{average_rating}</strong></article><article><span>Ответы клиентов</span><strong>{len(rating_rows) * 100 / max(len(completed), 1):.0f}%</strong></article></div>"
+                   + "<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки по дням</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars'>" + bars + "</div></section>"
+                   + "<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Выручка по дням</h2><span class='panel-caption'>По дате завершения</span></div><div class='analytics-bars'>" + revenue_bars + "</div></section>"
+                   + "<section class='dashboard-panel'><h2>Статусы заявок</h2><div class='analytics-donut'><svg viewBox='0 0 140 140'>" + "".join(segments) + f"<text x='70' y='66'>{len(selected)}</text><text x='70' y='84'>всего</text></svg><ul>" + status_legend + "</ul></div></section>"
                    + "<section class='dashboard-panel'><h2>Срочность</h2>" + urgency_rows + "</section>"
-                   + "<section class='dashboard-panel'><h2>Частые клиенты</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{count}</b></li>" for name, count in top_clients) + "</ol></section></div>")
+                   + "<section class='dashboard-panel'><h2>Оценки клиентов</h2><div class='analytics-bars compact'>" + rating_chart + "</div></section>"
+                   + "<section class='dashboard-panel'><h2>Причины жалоб</h2>" + complaint_rows + "</section>"
+                   + "<section class='dashboard-panel'><h2>Частые клиенты</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{count}</b></li>" for name, count in top_clients) + "</ol></section>"
+                   + "<section class='dashboard-panel'><h2>Клиенты по выручке</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{format_rubles(amount)}</b></li>" for name, amount in top_revenue_clients) + "</ol></section>"
+                   + "<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Эффективность мастеров</h2><span class='panel-caption'>Завершённые работы за период</span></div><div class='table-wrap'><table><thead><tr><th>Мастер</th><th>Ремонты</th><th>Выручка</th><th>Оценка</th><th>Жалобы</th></tr></thead><tbody>" + master_rows + "</tbody></table></div></section></div>")
         return render_page(request, "Аналитика", content)
 
     @app.get("/admin/complaints", response_class=HTMLResponse)
@@ -707,6 +770,7 @@ def create_app() -> FastAPI:
                 return forbidden_page(request)
             view = effective_view(request, user)
             address = await db.scalar(select(RequestAddress).where(RequestAddress.request_id == request_id))
+            assignment = await db.get(RequestAssignment, request_id)
             text = admin_request_text(item) if view in {"admin", "master"} else client_request_text(item)
             photo = (
                 f"<img class='request-photo' src='/requests/{item.id}/photo?view={view}' alt='Фотография к заявке №{item.id}'>"
@@ -727,7 +791,10 @@ def create_app() -> FastAPI:
                 content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатна. Онлайн-оплата пока не подключена; дополнительный доступ выдаёт администратор. При технической ошибке обратитесь через раздел «Обратная связь».</p><button>Выполнить доступную AI-диагностику</button></form>"
             if not deleted and view in {"master", "admin"}:
                 if view == "master" and user.role in {"master", "admin"} and item.status in {"new", "in_progress"}:
-                    content += f"<form method='post' action='/staff/requests/{item.id}/take?view=master'><input type='hidden' name='csrf' value='{csrf_token(request)}'><button>Взять в работу</button></form>"
+                    if assignment is None:
+                        content += f"<form method='post' action='/staff/requests/{item.id}/take?view=master'><input type='hidden' name='csrf' value='{csrf_token(request)}'><button>Взять в работу</button></form>"
+                    else:
+                        content += f"<p class='dashboard-notice'>Заявка уже в работе: {html.escape(assignment.master_name)}.</p>"
                 content += staff_request_form(item, csrf_token(request), view)
             if not deleted and view == "client" and item.status == "completed":
                 content += f"<section class='card'><h2>Оцените ремонт</h2><form method='post' action='/requests/{item.id}/rating?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Оценка<select name='score'><option value='5'>5</option><option value='4'>4</option><option value='3'>3</option><option value='2'>2</option><option value='1'>1</option></select></label><label>Комментарий<textarea name='comment' maxlength='3000'></textarea></label><button>Отправить оценку</button></form></section>"
