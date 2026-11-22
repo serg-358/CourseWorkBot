@@ -20,6 +20,7 @@ from repair_bot.services.admin_dashboard import (
     dashboard_message,
     format_completion_duration,
     moscow_day,
+    moscow_datetime,
 )
 from repair_bot.web.workspace import request_price
 from repair_bot.handlers.common import (
@@ -342,7 +343,7 @@ async def show_complaints(callback: CallbackQuery, state: FSMContext) -> None:
     for complaint in complaints[start:start + COMPLAINTS_PER_PAGE]:
         lines.append(
             f"\n\n🧾 <b>Заявка №{complaint.request_id}</b> · "
-            f"{complaint.created_at:%d.%m.%Y}\n"
+            f"{moscow_datetime(complaint.created_at):%d.%m.%Y}\n"
             f"Категория: {COMPLAINT_LABELS.get(complaint.category, complaint.category)}\n"
             f"Мастер: {html.escape(complaint.master_name)}\n"
             f"{html.escape(complaint.message) or 'Без комментария'}"

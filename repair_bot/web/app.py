@@ -96,6 +96,7 @@ from repair_bot.services.admin_dashboard import (
     dashboard_buckets,
     dashboard_period,
     moscow_day,
+    moscow_datetime,
 )
 
 from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES, service_catalog
@@ -705,10 +706,10 @@ def create_app() -> FastAPI:
             options = "".join(f"<option value='{value}'>{label}</option>" for value, label in choices)
             answer = html.escape(state.answer if state else "")
             if state and state.answer:
-                control = f"<p class='dashboard-notice'>Ответ отправлен {state.updated_at:%d.%m.%Y %H:%M}. Клиент получил уведомление в Telegram.</p><p><strong>Ответ:</strong> {answer}</p>"
+                control = f"<p class='dashboard-notice'>Ответ отправлен {moscow_datetime(state.updated_at):%d.%m.%Y %H:%M}. Клиент получил уведомление в Telegram.</p><p><strong>Ответ:</strong> {answer}</p>"
             else:
                 control = f"<form method='post' action='/admin/complaints/{row.request_id}'><input type='hidden' name='csrf' value='{csrf}'><label>Статус<select name='status'>{options}</select></label><label>Ответ клиенту<textarea name='answer' maxlength='3000'></textarea></label><button>Сохранить и уведомить</button></form>"
-            rows.append(f"<article class='card'><h2>Заявка №{row.request_id} · {names[status]}</h2><p>{labels.get(row.category, row.category)} · {html.escape(row.master_name)} · {row.created_at:%d.%m.%Y}</p><p>{html.escape(row.message) or 'Без комментария'}</p>{control}<a href='/requests/{row.request_id}'>Открыть заявку →</a></article>")
+            rows.append(f"<article class='card'><h2>Заявка №{row.request_id} · {names[status]}</h2><p>{labels.get(row.category, row.category)} · {html.escape(row.master_name)} · {moscow_datetime(row.created_at):%d.%m.%Y}</p><p>{html.escape(row.message) or 'Без комментария'}</p>{control}<a href='/requests/{row.request_id}'>Открыть заявку →</a></article>")
         filters = "<nav class='user-role-tabs'><a href='/admin/complaints'>Все</a><a href='/admin/complaints?status=new'>Новые</a><a href='/admin/complaints?status=in_review'>Рассматриваются</a><a href='/admin/complaints?status=resolved'>Решённые</a></nav>"
         return render_page(request, "Жалобы", "<section class='dashboard-heading'><h1>Жалобы</h1><p>Обращения клиентов по завершённым ремонтам.</p></section>" + filters + ("".join(rows) or "<section class='card'><p>Жалоб пока нет.</p></section>"))
 

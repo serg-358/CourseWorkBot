@@ -38,9 +38,14 @@ class DashboardData:
 
 def moscow_day(value: datetime) -> date:
     """Возвращает московский календарный день для UTC-времени из базы."""
+    return moscow_datetime(value).date()
+
+
+def moscow_datetime(value: datetime) -> datetime:
+    """Переводит UTC-время из базы в московское для отображения."""
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
-    return value.astimezone(MOSCOW_TIME_ZONE).date()
+    return value.astimezone(MOSCOW_TIME_ZONE)
 
 
 def format_completion_duration(seconds: float | None) -> str:

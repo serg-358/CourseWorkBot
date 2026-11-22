@@ -9,6 +9,7 @@ from repair_bot.services.admin_dashboard import (
     dashboard_detail_message,
     build_dashboard_xlsx,
     dashboard_message,
+    moscow_datetime,
 )
 
 
@@ -83,6 +84,7 @@ def test_dashboard_uses_moscow_dates_and_includes_trash():
 
     assert dashboard.period_end.isoformat() == "2026-11-22"
     assert dashboard.timeline_counts[-1] == 2
+    assert moscow_datetime(datetime(2026, 11, 22, 21, 30)).strftime("%d.%m.%Y %H:%M") == "23.11.2026 00:30"
     assert dashboard.trash_count == 1
 
 
