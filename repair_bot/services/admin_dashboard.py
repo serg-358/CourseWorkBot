@@ -178,7 +178,7 @@ def _master_line(name: str, count: int, revenue: int, rating: float | None, comp
 def build_dashboard_xlsx(data: DashboardData, *, extras: dict[str, object] | None = None) -> bytes:
     """Создаёт XLSX-выгрузку тех же показателей, что видит администратор."""
     from openpyxl import Workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Alignment, Font
 
     workbook = Workbook()
     summary = workbook.active
@@ -188,6 +188,8 @@ def build_dashboard_xlsx(data: DashboardData, *, extras: dict[str, object] | Non
         summary.append(row)
     summary["A1"].font = Font(bold=True, size=14)
     summary.column_dimensions["A"].width, summary.column_dimensions["B"].width = 24, 22
+    for cell in summary["B"]:
+        cell.alignment = Alignment(horizontal="right")
     _append_table(workbook, "Заявки по интервалам", ("Интервал", "Количество"), zip(data.timeline_labels, data.timeline_counts, strict=True))
     _append_table(workbook, "Статусы", ("Статус", "Количество"), ((STATUS_LABELS[key], value) for key, value in data.status_counts.items()))
     _append_table(workbook, "Срочность", ("Срочность", "Количество"), ((PRIORITY_LABELS[key], value) for key, value in data.priority_counts.items()))
@@ -201,6 +203,8 @@ def build_dashboard_xlsx(data: DashboardData, *, extras: dict[str, object] | Non
 
 
 def _append_table(workbook, title: str, headers: tuple[str, str], rows: Iterable[tuple[object, object]]) -> None:
+    from openpyxl.styles import Alignment
+
     sheet = workbook.create_sheet(title)
     sheet.append(list(headers))
     for row in rows:
@@ -209,4 +213,8 @@ def _append_table(workbook, title: str, headers: tuple[str, str], rows: Iterable
         font = copy(cell.font)
         font.bold = True
         cell.font = font
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            if isinstance(cell.value, (int, float)) or cell.column == 2:
+                cell.alignment = Alignment(horizontal="right")
     sheet.column_dimensions["A"].width, sheet.column_dimensions["B"].width = 28, 16

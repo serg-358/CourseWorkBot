@@ -45,7 +45,10 @@ def test_dashboard_data_filters_period_and_exports_xlsx():
         "Мастера",
     ]
     assert workbook["Сводка"]["B6"].value == "1 250 ₽"
+    assert workbook["Сводка"]["B6"].alignment.horizontal == "right"
     assert list(workbook["Клиенты по стоимости"].values)[1] == ("Иван", "1 250 ₽")
+    assert workbook["Клиенты по стоимости"]["B2"].alignment.horizontal == "right"
+    assert workbook["Оценки"]["A2"].alignment.horizontal == "right"
 
 
 def test_dashboard_groups_long_period_into_at_most_seven_real_intervals():
