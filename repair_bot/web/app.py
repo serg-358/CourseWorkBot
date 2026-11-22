@@ -108,6 +108,17 @@ SITE_TEXT_DEFAULTS = {
     "client_welcome": "Отслеживайте ремонт и создавайте новые заявки в личном кабинете.",
     "service_note": "Выезд по адресу выполняется по согласованию с мастером.",
 }
+
+
+def format_completion_duration(seconds: float | None) -> str:
+    """Форматирует среднее время от создания заявки до её завершения."""
+    if seconds is None:
+        return "—"
+    minutes = max(0, round(seconds / 60))
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    parts = ([f"{days} д."] if days else []) + ([f"{hours} ч."] if hours else [])
+    return " ".join(parts + [f"{minutes} мин."] if parts or minutes else ["0 мин."])
 WEB_DIRECTORY = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
 templates.env.globals["money"] = format_rubles
@@ -505,6 +516,16 @@ def create_app() -> FastAPI:
         selected = [item for item in items if period_start <= moscow_day(item.created_at) <= period_end]
         completed = [item for item in items if item.status == "completed" and period_start <= moscow_day(completions.get(item.id, item.created_at)) <= period_end]
         revenue = sum(request_price(item) or 0 for item in completed)
+        completion_durations = [
+            max(0, (completions[item.id] - item.created_at).total_seconds())
+            for item in completed
+            if item.id in completions
+        ]
+        average_completion_duration = (
+            sum(completion_durations) / len(completion_durations)
+            if completion_durations
+            else None
+        )
         previous_start, previous_end = period_start - timedelta(days=span), period_start - timedelta(days=1)
         previous = [item for item in items if previous_start <= moscow_day(item.created_at) <= previous_end]
         previous_revenue = sum(request_price(item) or 0 for item in items if item.status == "completed" and previous_start <= moscow_day(completions.get(item.id, item.created_at)) <= previous_end)
@@ -570,7 +591,7 @@ def create_app() -> FastAPI:
         content = ("<section class='dashboard-heading'><div><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, финансам и качеству работы.</p></div>"
                    f"<form class='analytics-period' method='get'><nav class='analytics-period-shortcuts'>{period_links}</nav><label>С<input type='date' name='from' value='{period_start}'></label><label>По<input type='date' name='to' value='{period_end}'></label><button>Показать</button><a class='button secondary' href='/admin/analytics/export?{html.escape(export_query, quote=True)}'>Скачать XLSX</a></form></section>"
                    f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(selected)}</strong><small>{comparison(len(selected), len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
-                   f"<div class='analytics-secondary'><article><span>Средний чек</span><strong>{format_rubles(avg_check)}</strong></article><article><span>Отмены</span><strong>{cancellation_rate:.0f}%</strong></article><article><span>Средняя оценка</span><strong>{average_rating}</strong></article><article><span>Ответы клиентов</span><strong>{len(rating_rows) * 100 / max(len(completed), 1):.0f}%</strong></article></div>"
+                   f"<div class='analytics-secondary'><article><span>Средний чек</span><strong>{format_rubles(avg_check)}</strong></article><article><span>Отмены</span><strong>{cancellation_rate:.0f}%</strong></article><article><span>Средняя оценка</span><strong>{average_rating}</strong></article><article><span>Ответы клиентов</span><strong>{len(rating_rows) * 100 / max(len(completed), 1):.0f}%</strong></article><article><span>Среднее время выполнения</span><strong>{format_completion_duration(average_completion_duration)}</strong></article></div>"
                    + f"<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки {period_caption.lower()}</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + bars + "</div></section>"
                    + f"<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Выручка {period_caption.lower()}</h2><span class='panel-caption'>По дате завершения</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + revenue_bars + "</div></section>"
                    + "<section class='dashboard-panel'><h2>Статусы заявок</h2><div class='analytics-donut'><svg viewBox='0 0 140 140'>" + "".join(segments) + f"<text x='70' y='66'>{len(selected)}</text><text x='70' y='84'>всего</text></svg><ul>" + status_legend + "</ul></div></section>"

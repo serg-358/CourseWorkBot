@@ -10,14 +10,16 @@ from sqlalchemy import select
 from repair_bot.database.crud.feedback import list_complaints
 from repair_bot.database.crud.requests import get_all_requests
 from repair_bot.database.crud.users import get_all_users, get_user_by_telegram_id
-from repair_bot.database.models import RepairRating
+from repair_bot.database.models import RepairRating, RequestAssignment, RequestCompletion
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import main_menu_keyboard
 from repair_bot.services.admin_dashboard import (
     build_dashboard_data,
     build_dashboard_xlsx,
     dashboard_message,
+    moscow_day,
 )
+from repair_bot.web.workspace import request_price
 from repair_bot.handlers.common import (
     _demo_view_roles,
     edit_callback_screen,
@@ -183,12 +185,57 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
             requests = await get_all_requests(db) + await get_all_requests(db, trash=True)
             complaints = await list_complaints(db)
             ratings = list((await db.scalars(select(RepairRating))).all())
+            completions = {
+                row.request_id: row.completed_at
+                for row in (await db.scalars(select(RequestCompletion))).all()
+            }
+            assignments = {
+                row.request_id: row
+                for row in (await db.scalars(select(RequestAssignment))).all()
+            }
 
     if users is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
 
     dashboard = build_dashboard_data(requests, ratings, complaints, period)
+    completed = [
+        item
+        for item in requests
+        if item.status == "completed"
+        and dashboard.period_start <= moscow_day(completions.get(item.id, item.created_at)) <= dashboard.period_end
+    ]
+    revenue = sum(request_price(item) or 0 for item in completed)
+    completion_durations = [
+        max(0, (completions[item.id] - item.created_at).total_seconds())
+        for item in completed
+        if item.id in completions
+    ]
+    ratings_by_request = {rating.request_id: rating for rating in ratings}
+    completed_ratings = [ratings_by_request[item.id] for item in completed if item.id in ratings_by_request]
+    period_complaints = [
+        complaint
+        for complaint in complaints
+        if dashboard.period_start <= moscow_day(complaint.created_at) <= dashboard.period_end
+    ]
+    client_revenue: dict[str, int] = {}
+    master_stats: dict[str, list] = {}
+    for item in completed:
+        amount = request_price(item) or 0
+        client_revenue[item.user.full_name] = client_revenue.get(item.user.full_name, 0) + amount
+        assignment = assignments.get(item.id)
+        name = assignment.master_name if assignment else "Не назначен"
+        stats = master_stats.setdefault(name, [0, 0, [], 0])
+        stats[0] += 1
+        stats[1] += amount
+        if item.id in ratings_by_request:
+            stats[2].append(ratings_by_request[item.id].score)
+        stats[3] += sum(complaint.request_id == item.id for complaint in period_complaints)
+    top_clients = sorted(client_revenue.items(), key=lambda row: row[1], reverse=True)[:3]
+    master_rows = [
+        (name, stats[0], stats[1], sum(stats[2]) / len(stats[2]) if stats[2] else None, stats[3])
+        for name, stats in sorted(master_stats.items(), key=lambda row: row[1][1], reverse=True)[:5]
+    ]
     clients = sum(user.role == "client" for user in users)
     admins = sum(user.role == "admin" for user in users)
     await callback.answer()
@@ -201,6 +248,13 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
                 clients=clients,
                 masters=sum(user.role == "master" for user in users),
                 admins=admins,
+                revenue_kopecks=revenue,
+                average_check_kopecks=revenue // len(completed) if completed else 0,
+                cancellation_rate=dashboard.status_counts["cancelled"] * 100 / max(dashboard.request_count, 1),
+                feedback_rate=len(completed_ratings) * 100 / max(len(completed), 1),
+                average_completion_duration=(sum(completion_durations) / len(completion_durations) if completion_durations else None),
+                top_clients=top_clients,
+                master_rows=master_rows,
             ),
             reply_markup=dashboard_keyboard(callback.from_user.id, period),
             parse_mode="HTML",

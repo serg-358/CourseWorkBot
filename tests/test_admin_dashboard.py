@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 from openpyxl import load_workbook
 
-from repair_bot.services.admin_dashboard import build_dashboard_data, build_dashboard_xlsx
+from repair_bot.services.admin_dashboard import (
+    build_dashboard_data,
+    build_dashboard_xlsx,
+    dashboard_message,
+)
 
 
 def test_dashboard_data_filters_period_and_exports_xlsx():
@@ -72,3 +76,27 @@ def test_dashboard_uses_moscow_dates_and_includes_trash():
     assert dashboard.period_end.isoformat() == "2026-11-22"
     assert dashboard.timeline_counts[-1] == 2
     assert dashboard.trash_count == 1
+
+
+def test_dashboard_message_has_finances_clients_and_masters():
+    dashboard = build_dashboard_data([], [], [], "7")
+
+    message = dashboard_message(
+        dashboard,
+        users_total=3,
+        clients=1,
+        masters=1,
+        admins=1,
+        revenue_kopecks=125_000,
+        average_check_kopecks=125_000,
+        cancellation_rate=20,
+        feedback_rate=50,
+        average_completion_duration=90 * 60,
+        top_clients=[("Иван", 125_000)],
+        master_rows=[("Мастер", 1, 125_000, 5.0, 0)],
+    )
+
+    assert "Финансы и скорость" in message
+    assert "Клиенты по выручке" in message
+    assert "Мастера" in message
+    assert "1 ч. 30 мин." in message

@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+import html
 from io import BytesIO
 from zoneinfo import ZoneInfo
 
@@ -40,6 +41,17 @@ def moscow_day(value: datetime) -> date:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(MOSCOW_TIME_ZONE).date()
+
+
+def format_completion_duration(seconds: float | None) -> str:
+    """Форматирует среднее время от создания заявки до её завершения."""
+    if seconds is None:
+        return "—"
+    minutes = max(0, round(seconds / 60))
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    parts = ([f"{days} д."] if days else []) + ([f"{hours} ч."] if hours else [])
+    return " ".join(parts + [f"{minutes} мин."] if parts or minutes else ["0 мин."])
 
 
 def dashboard_period(requests: Iterable, period: str = "7", *, start: date | None = None, end: date | None = None) -> tuple[date, date, str]:
@@ -95,11 +107,33 @@ def build_dashboard_data(requests: Iterable, ratings: Iterable, complaints: Iter
     )
 
 
-def dashboard_message(data: DashboardData, *, users_total: int, clients: int, masters: int, admins: int) -> str:
+def dashboard_message(
+    data: DashboardData,
+    *,
+    users_total: int,
+    clients: int,
+    masters: int,
+    admins: int,
+    revenue_kopecks: int = 0,
+    average_check_kopecks: int = 0,
+    cancellation_rate: float = 0,
+    feedback_rate: float = 0,
+    average_completion_duration: float | None = None,
+    top_clients: list[tuple[str, int]] | None = None,
+    master_rows: list[tuple[str, int, int, float | None, int]] | None = None,
+) -> str:
     """Формирует подробную, но компактную сводку для Telegram."""
     timeline = "\n".join(f"• {label}: {count}" for label, count in zip(data.timeline_labels, data.timeline_counts, strict=True))
     ratings = " · ".join(f"{score}★: {count}" for score, count in data.rating_counts.items())
     complaints = " · ".join(f"{COMPLAINT_LABELS[category]}: {count}" for category, count in data.complaint_counts.items())
+    clients_text = "\n".join(
+        f"• {html.escape(name[:30])}: {_format_rubles(amount)}"
+        for name, amount in (top_clients or [])[:3]
+    ) or "• Нет завершённых ремонтов"
+    masters_text = "\n".join(
+        _master_line(name, count, revenue, rating, complaints_count)
+        for name, count, revenue, rating, complaints_count in (master_rows or [])[:5]
+    ) or "• Нет завершённых ремонтов"
     return (
         f"📊 <b>Дашборд мастерской</b> · {data.label}\n🗓 {data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}\n\n"
         f"👥 Пользователи: {users_total} (клиенты: {clients}, мастера: {masters}, администраторы: {admins})\n\n"
@@ -107,8 +141,21 @@ def dashboard_message(data: DashboardData, *, users_total: int, clients: int, ma
         f"   Завершены: {data.status_counts['completed']} · Отменены: {data.status_counts['cancelled']}\n"
         f"   В корзине: {data.trash_count}\n   Обычные: {data.priority_counts['low']} · Срочные: {data.priority_counts['medium']} · Критические: {data.priority_counts['high']}\n\n"
         f"📈 <b>Заявки по интервалам</b>\n{timeline}\n\n⭐ Средняя оценка: {f'{data.average_rating:.1f}' if data.average_rating is not None else '—'}\n"
-        f"   {ratings}\n⚠️ Жалобы: {sum(data.complaint_counts.values())}\n   {complaints}"
+        f"   {ratings}\n⚠️ Жалобы: {sum(data.complaint_counts.values())}\n   {complaints}\n\n"
+        f"💰 <b>Финансы и скорость</b>\nВыручка: {_format_rubles(revenue_kopecks)} · Средний чек: {_format_rubles(average_check_kopecks)}\n"
+        f"Отмены: {cancellation_rate:.0f}% · Ответы: {feedback_rate:.0f}%\n"
+        f"Среднее выполнение: {format_completion_duration(average_completion_duration)}\n\n"
+        f"👤 <b>Клиенты по выручке</b>\n{clients_text}\n\n🛠 <b>Мастера</b>\n{masters_text}"
     )
+
+
+def _format_rubles(kopecks: int) -> str:
+    return f"{kopecks // 100:,} ₽".replace(",", " ")
+
+
+def _master_line(name: str, count: int, revenue: int, rating: float | None, complaints: int) -> str:
+    rating_text = f"{rating:.1f}" if rating is not None else "—"
+    return f"• {html.escape(name[:24])}: {count} шт., {_format_rubles(revenue)}, оценка {rating_text}, жалобы {complaints}"
 
 
 def build_dashboard_xlsx(data: DashboardData) -> bytes:

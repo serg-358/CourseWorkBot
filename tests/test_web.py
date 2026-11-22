@@ -289,6 +289,8 @@ def test_password_hash_uses_scrypt_and_checks_correct_password():
     assert password_hash.startswith("scrypt$")
     assert web_app.verify_password("strong-password-123", password_hash)
     assert not web_app.verify_password("wrong-password", password_hash)
+    assert web_app.format_completion_duration(90 * 60) == "1 ч. 30 мин."
+    assert web_app.format_completion_duration(None) == "—"
 
 
 @pytest.mark.asyncio
@@ -314,6 +316,7 @@ async def test_admin_analytics_exports_moscow_dashboard_data(db_session_factory,
         await client.post("/login", data={"csrf": csrf, "email": "analytics@example.test", "password": "test-pass-123"})
         page = await client.get("/admin/analytics?period=7")
         assert "Скачать XLSX" in page.text
+        assert "Среднее время выполнения" in page.text
         assert "Всё время" in page.text
         # Три заявки за московское 22.11, включая корзину: аналитика сохраняет историю.
         chart = re.search(r"<h2>Заявки по дням</h2>.*?<div class='analytics-bars'[^>]*>(.*?)</div></section>", page.text, re.S).group(1)
