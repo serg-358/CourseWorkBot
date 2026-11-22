@@ -314,6 +314,7 @@ async def test_admin_analytics_exports_moscow_dashboard_data(db_session_factory,
         page = await client.get("/admin/analytics?period=7")
         assert "Скачать XLSX" in page.text
         assert "Всё время" in page.text
+        assert "По дате создания · всего: 2" in page.text
         export = await client.get("/admin/analytics/export?period=7")
 
     assert export.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
