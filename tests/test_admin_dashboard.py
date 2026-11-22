@@ -21,7 +21,7 @@ def test_dashboard_data_filters_period_and_exports_xlsx():
     complaints = [SimpleNamespace(category="quality", created_at=datetime(2026, 11, 22))]
 
     dashboard = build_dashboard_data(requests, ratings, complaints, "7")
-    workbook = load_workbook(BytesIO(build_dashboard_xlsx(dashboard)))
+    workbook = load_workbook(BytesIO(build_dashboard_xlsx(dashboard, extras={"completed_cost": 125_000, "average_check": 125_000, "top_clients": [("Иван", 125_000)]})))
 
     assert dashboard.request_count == 2
     assert dashboard.status_counts == {
@@ -44,6 +44,8 @@ def test_dashboard_data_filters_period_and_exports_xlsx():
         "Клиенты по стоимости",
         "Мастера",
     ]
+    assert workbook["Сводка"]["B6"].value == "1 250 ₽"
+    assert list(workbook["Клиенты по стоимости"].values)[1] == ("Иван", "1 250 ₽")
 
 
 def test_dashboard_groups_long_period_into_at_most_seven_real_intervals():

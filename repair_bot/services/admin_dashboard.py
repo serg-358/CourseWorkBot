@@ -184,7 +184,7 @@ def build_dashboard_xlsx(data: DashboardData, *, extras: dict[str, object] | Non
     summary = workbook.active
     summary.title = "Сводка"
     extras = extras or {}
-    for row in (("Дашборд мастерской",), ("Период", f"{data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}"), ("Заявки", data.request_count), ("В корзине", data.trash_count), ("Средняя оценка", data.average_rating), ("Стоимость завершённых ремонтов", extras.get("completed_cost", 0)), ("Средний чек", extras.get("average_check", 0)), ("Отмены, %", extras.get("cancellation_rate")), ("Ответы клиентов, %", extras.get("feedback_rate")), ("Среднее выполнение", extras.get("average_completion_duration", "—"))):
+    for row in (("Дашборд мастерской",), ("Период", f"{data.period_start:%d.%m.%Y}–{data.period_end:%d.%m.%Y}"), ("Заявки", data.request_count), ("В корзине", data.trash_count), ("Средняя оценка", data.average_rating), ("Стоимость завершённых ремонтов", _format_rubles(int(extras.get("completed_cost", 0)))), ("Средний чек", _format_rubles(int(extras.get("average_check", 0)))), ("Отмены, %", extras.get("cancellation_rate")), ("Ответы клиентов, %", extras.get("feedback_rate")), ("Среднее выполнение", extras.get("average_completion_duration", "—"))):
         summary.append(row)
     summary["A1"].font = Font(bold=True, size=14)
     summary.column_dimensions["A"].width, summary.column_dimensions["B"].width = 24, 22
@@ -193,7 +193,7 @@ def build_dashboard_xlsx(data: DashboardData, *, extras: dict[str, object] | Non
     _append_table(workbook, "Срочность", ("Срочность", "Количество"), ((PRIORITY_LABELS[key], value) for key, value in data.priority_counts.items()))
     _append_table(workbook, "Оценки", ("Оценка", "Количество"), data.rating_counts.items())
     _append_table(workbook, "Жалобы", ("Категория", "Количество"), ((COMPLAINT_LABELS[key], value) for key, value in data.complaint_counts.items()))
-    _append_table(workbook, "Клиенты по стоимости", ("Клиент", "Стоимость завершённых ремонтов"), extras.get("top_clients", []))
+    _append_table(workbook, "Клиенты по стоимости", ("Клиент", "Стоимость завершённых ремонтов"), ((name, _format_rubles(cost)) for name, cost in extras.get("top_clients", [])))
     _append_table(workbook, "Мастера", ("Мастер", "Ремонты / стоимость / оценка / жалобы"), ((name, f"{count} / {_format_rubles(cost)} / {rating if rating is not None else '—'} / {complaints}") for name, count, cost, rating, complaints in extras.get("masters", [])))
     output = BytesIO()
     workbook.save(output)
