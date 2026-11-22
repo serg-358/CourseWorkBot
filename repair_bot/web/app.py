@@ -16,7 +16,7 @@ import secrets
 import time
 import sys
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -408,7 +408,8 @@ def create_app() -> FastAPI:
             await update_request_status(db, request_id, status)
         if status != previous_status:
             await notify_client_status(owner_telegram_id, request_id, status)
-        return RedirectResponse("/panel", status_code=303)
+        destination = "/panel?view=master" if effective_view(request, user) == "master" else "/panel"
+        return RedirectResponse(destination, status_code=303)
 
     @app.post("/staff/requests/{request_id}/take")
     async def take_request_from_site(request: Request, request_id: int) -> Response:
@@ -417,13 +418,13 @@ def create_app() -> FastAPI:
             return forbidden_page(request)
         async with SessionLocal() as db:
             account, user = await identity(request, db)
-            if account is None or user is None or user.role != "master":
+            if account is None or user is None or user.role not in {"master", "admin"}:
                 return forbidden_page(request)
             item = await take_request(db, request_id, user.id)
         if item is None:
             return error_page(request, "Заявку уже принял другой мастер или она закрыта.", "/panel?tab=requests")
         await notify_client_status(item.user.telegram_id, item.id, "in_progress")
-        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+        return RedirectResponse(f"/requests/{request_id}?view=master", status_code=303)
 
     @app.post("/requests/{request_id}/rating")
     async def rate_request(request: Request, request_id: int) -> Response:
@@ -437,9 +438,9 @@ def create_app() -> FastAPI:
         comment = form.get("comment", "").strip()
         async with SessionLocal() as db:
             account, user = await identity(request, db)
-            if account is None or user is None or user.role != "client" or len(comment) > 3000 or not await save_rating(db, request_id, user.id, score, comment):
+            if account is None or user is None or effective_view(request, user) != "client" or len(comment) > 3000 or not await save_rating(db, request_id, user.id, score, comment):
                 return forbidden_page(request)
-        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+        return RedirectResponse(f"/requests/{request_id}?view=client", status_code=303)
 
     @app.post("/requests/{request_id}/complaint")
     async def complain_about_request(request: Request, request_id: int) -> Response:
@@ -449,11 +450,11 @@ def create_app() -> FastAPI:
         category, message = form.get("category", ""), form.get("message", "").strip()
         async with SessionLocal() as db:
             account, user = await identity(request, db)
-            if account is None or user is None or user.role != "client" or category not in COMPLAINT_CATEGORIES or len(message) > 3000 or not await save_complaint(db, request_id, user.id, category, message):
+            if account is None or user is None or effective_view(request, user) != "client" or category not in COMPLAINT_CATEGORIES or len(message) > 3000 or not await save_complaint(db, request_id, user.id, category, message):
                 return forbidden_page(request)
             recipients = [item.telegram_id for item in await users_by_role(db, "admin")]
         await deliver_feedback(recipients, f"Жалоба по заявке №{request_id}\nКатегория: {category}\n\n{message}")
-        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+        return RedirectResponse(f"/requests/{request_id}?view=client", status_code=303)
 
     @app.get("/admin/analytics", response_class=HTMLResponse)
     async def admin_analytics(request: Request) -> Response:
@@ -470,10 +471,29 @@ def create_app() -> FastAPI:
         for item in items:
             client_counts[item.user.full_name] = client_counts.get(item.user.full_name, 0) + 1
         top_clients = sorted(client_counts.items(), key=lambda row: row[1], reverse=True)[:5]
-        content = ("<section class='dashboard-heading'><h1>Аналитика мастерской</h1><p>Сводка по всем заявкам.</p></section>"
+        last_day = max((item.created_at.date() for item in items), default=date.today())
+        days = [last_day - timedelta(days=offset) for offset in range(6, -1, -1)]
+        daily = [sum(item.created_at.date() == day for item in items) for day in days]
+        maximum = max(daily, default=1) or 1
+        bars = "".join(f"<div class='analytics-bar'><b style='height:{max(8, count * 100 / maximum):.0f}%'></b><span>{day:%d.%m}</span><small>{count}</small></div>" for day, count in zip(days, daily))
+        palette = {"new": "#78a6ff", "in_progress": "#3ddc97", "completed": "#b18cff", "cancelled": "#ff8a80"}
+        total = max(len(items), 1)
+        offset = 0.0
+        segments = []
+        for status, count in counts.items():
+            length = count / total * 100
+            segments.append(f"<circle cx='70' cy='70' r='52' pathLength='100' stroke='{palette[status]}' stroke-dasharray='{length} {100 - length}' stroke-dashoffset='{-offset}'/>")
+            offset += length
+        urgency = {"Обычная": sum(selected_priority(item) == "low" for item in items), "Срочная": sum(selected_priority(item) == "medium" for item in items), "Критическая": sum(selected_priority(item) == "high" for item in items)}
+        urgency_max = max(urgency.values(), default=1) or 1
+        urgency_rows = "".join(f"<div class='analytics-progress'><span>{label}</span><i><b style='width:{count * 100 / urgency_max:.0f}%'></b></i><strong>{count}</strong></div>" for label, count in urgency.items())
+        status_legend = "".join(f"<li><i style='background:{palette[status]}'></i>{STATUSES[status]} <strong>{count}</strong></li>" for status, count in counts.items())
+        content = ("<section class='dashboard-heading'><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, загрузке и качеству работы.</p></section>"
                    f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(items)}</strong></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
-                   + "<section class='dashboard-panel'><h2>Статусы</h2>" + " · ".join(f"{STATUSES[key]}: {value}" for key, value in counts.items()) + "</section>"
-                   + "<section class='dashboard-panel'><h2>Частые клиенты</h2><ol>" + "".join(f"<li>{html.escape(name)} — {count} заявок</li>" for name, count in top_clients) + "</ol></section>")
+                   + "<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки за 7 дней</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars'>" + bars + "</div></section>"
+                   + "<section class='dashboard-panel'><h2>Статусы заявок</h2><div class='analytics-donut'><svg viewBox='0 0 140 140'>" + "".join(segments) + f"<text x='70' y='66'>{len(items)}</text><text x='70' y='84'>всего</text></svg><ul>" + status_legend + "</ul></div></section>"
+                   + "<section class='dashboard-panel'><h2>Срочность</h2>" + urgency_rows + "</section>"
+                   + "<section class='dashboard-panel'><h2>Частые клиенты</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{count}</b></li>" for name, count in top_clients) + "</ol></section></div>")
         return render_page(request, "Аналитика", content)
 
     @app.get("/admin/complaints", response_class=HTMLResponse)
@@ -706,12 +726,12 @@ def create_app() -> FastAPI:
             if not deleted and item.status in {"new", "in_progress"} and not item.ai_assessment and not (item.lifecycle and item.lifecycle.imported):
                 content += f"<form method='post' action='/requests/{item.id}/ai' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><p>Первая AI-попытка бесплатна. Онлайн-оплата пока не подключена; дополнительный доступ выдаёт администратор. При технической ошибке обратитесь через раздел «Обратная связь».</p><button>Выполнить доступную AI-диагностику</button></form>"
             if not deleted and view in {"master", "admin"}:
-                if view == "master" and user.role == "master" and item.status in {"new", "in_progress"}:
-                    content += f"<form method='post' action='/staff/requests/{item.id}/take'><input type='hidden' name='csrf' value='{csrf_token(request)}'><button>Взять в работу</button></form>"
-                content += staff_request_form(item, csrf_token(request))
+                if view == "master" and user.role in {"master", "admin"} and item.status in {"new", "in_progress"}:
+                    content += f"<form method='post' action='/staff/requests/{item.id}/take?view=master'><input type='hidden' name='csrf' value='{csrf_token(request)}'><button>Взять в работу</button></form>"
+                content += staff_request_form(item, csrf_token(request), view)
             if not deleted and view == "client" and item.status == "completed":
-                content += f"<section class='card'><h2>Оцените ремонт</h2><form method='post' action='/requests/{item.id}/rating'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Оценка<select name='score'><option value='5'>5</option><option value='4'>4</option><option value='3'>3</option><option value='2'>2</option><option value='1'>1</option></select></label><label>Комментарий<textarea name='comment' maxlength='3000'></textarea></label><button>Отправить оценку</button></form></section>"
-                content += f"<section class='card'><h2>Оставить жалобу</h2><form method='post' action='/requests/{item.id}/complaint'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
+                content += f"<section class='card'><h2>Оцените ремонт</h2><form method='post' action='/requests/{item.id}/rating?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Оценка<select name='score'><option value='5'>5</option><option value='4'>4</option><option value='3'>3</option><option value='2'>2</option><option value='1'>1</option></select></label><label>Комментарий<textarea name='comment' maxlength='3000'></textarea></label><button>Отправить оценку</button></form></section>"
+                content += f"<section class='card'><h2>Оставить жалобу</h2><form method='post' action='/requests/{item.id}/complaint?view=client'><input type='hidden' name='csrf' value='{csrf_token(request)}'><label>Категория<select name='category'><option value='quality'>Качество</option><option value='timing'>Сроки</option><option value='price'>Стоимость</option><option value='communication'>Общение</option><option value='other'>Другое</option></select></label><label>Комментарий<textarea name='message' maxlength='3000'></textarea></label><button>Отправить жалобу</button></form></section>"
             if not deleted and item.status in {"new", "in_progress"} and not request_photo_id(item):
                 content += f"<form method='post' enctype='multipart/form-data' action='/requests/{item.id}/photo' data-request-form><input type='hidden' name='csrf' value='{csrf_token(request)}'><h2>Добавить фотографию</h2><label>Фото неисправности<input name='photo' type='file' accept='image/jpeg,image/png,image/webp' required></label><p>JPG, PNG или WebP до 5 МБ. Фото получит мастер; готовая AI-оценка не перезаписывается.</p><button>Сохранить фото</button></form>"
             return render_page(request, f"Заявка №{item.id}", content + "</article>")
@@ -972,7 +992,7 @@ def dashboard_content(request: Request, user: User, role: str, items: list[Repai
     )
 
 
-def staff_request_form(item: RepairRequest, csrf: str) -> str:
+def staff_request_form(item: RepairRequest, csrf: str, view: str = "") -> str:
     """Строит форму статуса и подтверждённой правки диагноза/цены."""
     latest = item.staff_edits[-1] if item.staff_edits else None
     parts, tools = effective_staff_details(item)
@@ -993,7 +1013,7 @@ def staff_request_form(item: RepairRequest, csrf: str) -> str:
         )
     )
     return (
-        f"<form method='post' action='/staff/requests/{item.id}/update'>"
+        f"<form method='post' action='/staff/requests/{item.id}/update{('?view=master' if view == 'master' else '')}'>"
         f"<input type='hidden' name='csrf' value='{csrf}'>"
         f"<label>Подтверждённый диагноз<textarea name='diagnosis' minlength='3' maxlength='3000' required>{html.escape(diagnosis)}</textarea></label>"
         f"<label>Детали для проверки<textarea name='parts' maxlength='3000'>{html.escape(parts)}</textarea></label>"

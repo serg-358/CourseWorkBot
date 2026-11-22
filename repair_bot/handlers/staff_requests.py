@@ -83,7 +83,7 @@ async def show_all_requests(callback: CallbackQuery, state: FSMContext) -> None:
                 request_photo_id(request)
             ),
             can_edit_assessment=True,
-            can_take=role == "master" and request.status in {"new", "in_progress"},
+            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"},
         ),
         parse_mode="HTML",
     )
@@ -192,7 +192,7 @@ async def change_request_status(callback: CallbackQuery, bot: Bot) -> None:
                     request_photo_id(request)
                 ),
             can_edit_assessment=True,
-            can_take=role == "master" and request.status in {"new", "in_progress"},
+            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"},
             ),
             parse_mode="HTML",
         )
@@ -407,7 +407,7 @@ async def process_staff_price(message: Message, state: FSMContext) -> None:
                 request_photo_id(request)
             ),
             can_edit_assessment=True,
-            can_take=role == "master" and request.status in {"new", "in_progress"},
+            can_take=role in {"master", "admin"} and request.status in {"new", "in_progress"},
         ),
         parse_mode="HTML",
     )

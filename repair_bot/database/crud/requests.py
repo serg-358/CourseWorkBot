@@ -146,7 +146,7 @@ async def take_request(db: AsyncSession, request_id: int, master_id: int) -> Rep
     """Закрепляет открытую заявку за мастером только при первом принятии."""
     request = await get_repair_request(db, request_id)
     master = await db.get(User, master_id)
-    if request is None or master is None or master.role != "master" or request.status not in {"new", "in_progress"}:
+    if request is None or master is None or master.role not in {"master", "admin"} or request.status not in {"new", "in_progress"}:
         return None
     if await db.get(RequestAssignment, request_id):
         return None
