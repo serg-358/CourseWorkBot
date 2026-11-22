@@ -58,6 +58,8 @@ def request_navigation_keyboard(
     can_analyze: bool = False,
     can_rate: bool = False,
     can_complain: bool = False,
+    rating_score: int | None = None,
+    has_complaint: bool = False,
     can_take: bool = False,
     is_taken: bool = False,
 ) -> InlineKeyboardMarkup:
@@ -110,9 +112,19 @@ def request_navigation_keyboard(
                 )
             ]
         )
-    if request_id is not None and can_rate:
+    if request_id is not None and rating_score is not None:
+        rows.append([InlineKeyboardButton(
+            text=f"⭐ Заявка оценена на {rating_score} баллов",
+            callback_data=f"requests:page-info:{page + 1}:{total_pages}",
+        )])
+    elif request_id is not None and can_rate:
         rows.append([InlineKeyboardButton(text="⭐ Оценить ремонт", callback_data=f"request:rate:{request_id}")])
-    if request_id is not None and can_complain:
+    if request_id is not None and has_complaint:
+        rows.append([InlineKeyboardButton(
+            text="⚠️ Жалоба уже оставлена",
+            callback_data=f"requests:page-info:{page + 1}:{total_pages}",
+        )])
+    elif request_id is not None and can_complain:
         rows.append([InlineKeyboardButton(text="⚠️ Оставить жалобу", callback_data=f"request:complain:{request_id}")])
     rows.extend(menu.inline_keyboard)
     return InlineKeyboardMarkup(inline_keyboard=rows)

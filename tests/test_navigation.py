@@ -151,6 +151,127 @@ def test_open_client_request_has_append_description_action():
     assert "request:append:42" in callbacks
 
 
+def test_completed_request_shows_saved_feedback_as_inactive_actions():
+    keyboard = request_navigation_keyboard(
+        view="client",
+        page=0,
+        total_pages=1,
+        menu=main_menu_keyboard("client"),
+        request_id=42,
+        can_rate=True,
+        can_complain=True,
+        rating_score=4,
+        has_complaint=True,
+    )
+
+    buttons = {
+        button.text: button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    }
+    assert buttons["⭐ Заявка оценена на 4 баллов"] == "requests:page-info:1:1"
+    assert buttons["⚠️ Жалоба уже оставлена"] == "requests:page-info:1:1"
+
+
+@pytest.mark.asyncio
+async def test_rating_choice_confirms_and_refreshes_original_card(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+    user = SimpleNamespace(id=7, role="client")
+    request = SimpleNamespace(
+        id=13,
+        user_id=7,
+        status="completed",
+        priority="medium",
+        description="Компьютер не включается.",
+        ai_assessment=None,
+        staff_edits=[],
+        lifecycle=SimpleNamespace(imported=False),
+    )
+    monkeypatch.setattr(client_requests, "SessionLocal", Session)
+    monkeypatch.setattr(client_requests, "get_user_by_telegram_id", AsyncMock(return_value=user))
+    monkeypatch.setattr(client_requests, "save_rating", AsyncMock(return_value=True))
+    monkeypatch.setattr(client_requests, "get_repair_request", AsyncMock(return_value=request))
+    monkeypatch.setattr(client_requests, "get_user_requests", AsyncMock(return_value=[request]))
+    monkeypatch.setattr(client_requests, "get_feedback_state", AsyncMock(return_value=(5, False)))
+    refresh = AsyncMock()
+    monkeypatch.setattr(client_requests, "safe_edit_message", refresh)
+
+    bot = SimpleNamespace()
+    message = SimpleNamespace(
+        bot=bot,
+        answer=AsyncMock(),
+        delete=AsyncMock(),
+    )
+    callback = SimpleNamespace(
+        data="request:rate:13:5",
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(get_data=AsyncMock(return_value={
+        "feedback_screen_chat_id": 100,
+        "feedback_screen_message_id": 200,
+    }))
+
+    await client_requests.rate_completed_request(callback, state)
+
+    message.delete.assert_awaited_once()
+    message.answer.assert_awaited_once_with("✅ Оценка поставлена: 5 из 5.")
+    refresh.assert_awaited_once()
+    assert "Заявка оценена на 5 баллов" in str(refresh.await_args.kwargs["reply_markup"])
+
+
+@pytest.mark.asyncio
+async def test_complaint_category_offers_skip_except_other():
+    prompt = SimpleNamespace(chat=SimpleNamespace(id=100), message_id=201)
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=100),
+        message_id=200,
+        answer=AsyncMock(return_value=prompt),
+        delete=AsyncMock(),
+    )
+    callback = SimpleNamespace(
+        data="request:complain:13:quality",
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(set_state=AsyncMock(), update_data=AsyncMock())
+
+    await client_requests.start_complaint(callback, state)
+
+    prompt_keyboard = message.answer.await_args.kwargs["reply_markup"]
+    assert prompt_keyboard.inline_keyboard[0][0].callback_data == "request:complain:skip"
+
+
+@pytest.mark.asyncio
+async def test_other_complaint_category_requires_description():
+    prompt = SimpleNamespace(chat=SimpleNamespace(id=100), message_id=201)
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=100),
+        message_id=200,
+        answer=AsyncMock(return_value=prompt),
+        delete=AsyncMock(),
+    )
+    callback = SimpleNamespace(
+        data="request:complain:13:other",
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(set_state=AsyncMock(), update_data=AsyncMock())
+
+    await client_requests.start_complaint(callback, state)
+
+    assert message.answer.await_args.kwargs["reply_markup"] is None
+
+
 def test_staff_card_has_status_actions_and_menu():
     keyboard = request_navigation_keyboard(
         view="staff",
@@ -190,6 +311,7 @@ async def test_client_request_callback_edits_screen_without_sending_message(monk
     monkeypatch.setattr(client_requests, "SessionLocal", Session)
     monkeypatch.setattr(client_requests, "get_user_by_telegram_id", AsyncMock(return_value=user))
     monkeypatch.setattr(client_requests, "get_user_requests", AsyncMock(return_value=[request]))
+    monkeypatch.setattr(client_requests, "get_feedback_state", AsyncMock(return_value=(None, False)))
 
     bot = SimpleNamespace(edit_message_text=AsyncMock(), send_message=AsyncMock())
     message = SimpleNamespace(

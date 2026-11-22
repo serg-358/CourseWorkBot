@@ -6,7 +6,12 @@ from aiogram import F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from repair_bot.database.crud.feedback import COMPLAINT_CATEGORIES, save_complaint, save_rating
+from repair_bot.database.crud.feedback import (
+    COMPLAINT_CATEGORIES,
+    get_feedback_state,
+    save_complaint,
+    save_rating,
+)
 from repair_bot.database.crud.requests import append_request_description, create_repair_request, get_repair_request, get_user_requests
 from repair_bot.database.crud.users import get_all_users, get_user_by_telegram_id
 from repair_bot.database.session import SessionLocal
@@ -33,12 +38,39 @@ from repair_bot.handlers.common import (
     client_request_text,
     edit_callback_screen,
     menu_for_user,
+    safe_edit_message,
 )
 import logging
 from aiogram import Router
 
 router = Router(name="client_requests")
 logger = logging.getLogger(__name__)
+
+
+def client_request_keyboard(
+    request,
+    *,
+    telegram_id: int,
+    page: int,
+    total_pages: int,
+    role: str,
+    rating_score: int | None,
+    has_complaint: bool,
+):
+    """Собирает клавиатуру клиентской карточки с актуальным состоянием обратной связи."""
+    return request_navigation_keyboard(
+        view="client",
+        page=page,
+        total_pages=total_pages,
+        menu=menu_for_user(telegram_id, role),
+        request_id=request.id,
+        can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
+        can_analyze=request.status in CLIENT_EDITABLE_STATUSES and not getattr(request, "ai_assessment", None) and not (getattr(request, "lifecycle", None) and request.lifecycle.imported),
+        can_rate=request.status == "completed",
+        can_complain=request.status == "completed",
+        rating_score=rating_score,
+        has_complaint=has_complaint,
+    )
 
 
 async def current_user_role(telegram_id: int) -> str:
@@ -77,24 +109,24 @@ async def show_my_requests(callback: CallbackQuery, state: FSMContext) -> None:
     else:
         request = requests[page]
         text = client_request_text(request)
-        markup = request_navigation_keyboard(
-            view="client",
+        async with SessionLocal() as feedback_db:
+            rating_score, has_complaint = await get_feedback_state(feedback_db, request.id)
+        markup = client_request_keyboard(
+            request,
+            telegram_id=callback.from_user.id,
             page=page,
             total_pages=total_pages,
-            menu=menu_for_user(callback.from_user.id, role),
-            request_id=request.id,
-            can_append_description=request.status in CLIENT_EDITABLE_STATUSES,
-            can_analyze=request.status in CLIENT_EDITABLE_STATUSES and not getattr(request, "ai_assessment", None) and not (getattr(request, "lifecycle", None) and request.lifecycle.imported),
-            can_rate=request.status == "completed",
-            can_complain=request.status == "completed",
+            role=role,
+            rating_score=rating_score,
+            has_complaint=has_complaint,
         )
     await edit_callback_screen(callback, text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("request:rate:"))
-async def rate_completed_request(callback: CallbackQuery) -> None:
+async def rate_completed_request(callback: CallbackQuery, state: FSMContext) -> None:
     """Сохраняет одну оценку владельца завершённой заявки."""
-    if callback.from_user is None:
+    if callback.from_user is None or callback.message is None:
         return
     parts = (callback.data or "").split(":")
     if len(parts) == 3 and parts[2].isdigit():
@@ -102,6 +134,10 @@ async def rate_completed_request(callback: CallbackQuery) -> None:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=str(score), callback_data=f"request:rate:{request_id}:{score}") for score in range(1, 6)]])
         await callback.answer()
         if callback.message:
+            await state.update_data(
+                feedback_screen_chat_id=callback.message.chat.id,
+                feedback_screen_message_id=callback.message.message_id,
+            )
             await callback.message.answer("Оцените ремонт от 1 до 5.", reply_markup=keyboard)
         return
     if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
@@ -110,10 +146,48 @@ async def rate_completed_request(callback: CallbackQuery) -> None:
     async with SessionLocal() as db:
         user = await get_user_by_telegram_id(db, str(callback.from_user.id))
         saved = bool(user and await save_rating(db, int(parts[2]), user.id, int(parts[3])))
-    await callback.answer("Спасибо за оценку!" if saved else "Оценка недоступна или уже оставлена.", show_alert=not saved)
+        if saved and user:
+            request = await get_repair_request(db, int(parts[2]))
+            requests = await get_user_requests(db, user.id)
+            rating_score, has_complaint = await get_feedback_state(db, int(parts[2]))
+        else:
+            request, requests, rating_score, has_complaint = None, [], None, False
+    if not saved or request is None:
+        await callback.answer("Оценка недоступна или уже оставлена.", show_alert=True)
+        return
+    data = await state.get_data()
+    page = next((index for index, item in enumerate(requests) if item.id == request.id), 0)
+    _, total_pages = bounded_page(page, len(requests))
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramAPIError:
+        logger.info("Не удалось удалить сообщение выбора оценки.")
+    await callback.message.answer(f"✅ Оценка поставлена: {rating_score} из 5.")
+    chat_id, message_id = data.get("feedback_screen_chat_id"), data.get("feedback_screen_message_id")
+    if isinstance(chat_id, int) and isinstance(message_id, int):
+        await safe_edit_message(
+            callback.message.bot,
+            chat_id,
+            message_id,
+            client_request_text(request),
+            reply_markup=client_request_keyboard(
+                request,
+                telegram_id=callback.from_user.id,
+                page=page,
+                total_pages=total_pages,
+                role=user.role,
+                rating_score=rating_score,
+                has_complaint=has_complaint,
+            ),
+            parse_mode="HTML",
+        )
 
 
-@router.callback_query(F.data.startswith("request:complain:"))
+@router.callback_query(
+    F.data.startswith("request:complain:"),
+    F.data != "request:complain:skip",
+)
 async def start_complaint(callback: CallbackQuery, state: FSMContext) -> None:
     """Запрашивает категорию и текст жалобы у владельца заявки."""
     if callback.from_user is None or callback.message is None:
@@ -122,6 +196,10 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext) -> None:
     if len(parts) == 3 and parts[2].isdigit():
         request_id = int(parts[2])
         buttons = [[InlineKeyboardButton(text=label, callback_data=f"request:complain:{request_id}:{code}")] for code, label in (("quality", "Качество"), ("timing", "Сроки"), ("price", "Стоимость"), ("communication", "Общение"), ("other", "Другое"))]
+        await state.update_data(
+            feedback_screen_chat_id=callback.message.chat.id,
+            feedback_screen_message_id=callback.message.message_id,
+        )
         await callback.answer()
         await callback.message.answer("Выберите категорию жалобы.", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         return
@@ -131,27 +209,122 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(RequestStates.waiting_complaint_text)
     await state.update_data(complaint_request_id=int(parts[2]), complaint_category=parts[3])
     await callback.answer()
-    await callback.message.answer("Опишите ситуацию (для категории «Другое» текст обязателен).")
+    try:
+        await callback.message.delete()
+    except TelegramAPIError:
+        logger.info("Не удалось удалить сообщение выбора категории жалобы.")
+    prompt_keyboard = None if parts[3] == "other" else InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="Отправить без описания",
+                callback_data="request:complain:skip",
+            )
+        ]]
+    )
+    prompt = await callback.message.answer(
+        "Опишите ситуацию (для категории «Другое» текст обязателен).",
+        reply_markup=prompt_keyboard,
+    )
+    await state.update_data(
+        complaint_prompt_chat_id=prompt.chat.id,
+        complaint_prompt_message_id=prompt.message_id,
+    )
 
 
 @router.message(RequestStates.waiting_complaint_text, F.text)
 async def save_complaint_text(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
         return
-    data, text = await state.get_data(), (message.text or "").strip()
+    await save_complaint_response(
+        message,
+        state,
+        telegram_id=message.from_user.id,
+        text=(message.text or "").strip(),
+    )
+
+
+@router.callback_query(RequestStates.waiting_complaint_text, F.data == "request:complain:skip")
+async def skip_complaint_text(callback: CallbackQuery, state: FSMContext) -> None:
+    """Отправляет жалобу без описания, если категория это допускает."""
+    if callback.from_user is None or callback.message is None:
+        return
+    data = await state.get_data()
+    if data.get("complaint_category") == "other":
+        await callback.answer("Для категории «Другое» опишите ситуацию.", show_alert=True)
+        return
+    await callback.answer()
+    await save_complaint_response(
+        callback.message,
+        state,
+        telegram_id=callback.from_user.id,
+        text="",
+    )
+
+
+async def save_complaint_response(
+    message: Message,
+    state: FSMContext,
+    *,
+    telegram_id: int,
+    text: str,
+) -> None:
+    """Сохраняет жалобу и возвращает клиенту актуальную карточку заявки."""
+    data = await state.get_data()
     request_id, category = data.get("complaint_request_id"), data.get("complaint_category")
     async with SessionLocal() as db:
-        user = await get_user_by_telegram_id(db, str(message.from_user.id))
+        user = await get_user_by_telegram_id(db, str(telegram_id))
         saved = bool(isinstance(request_id, int) and isinstance(category, str) and user and len(text) <= 3000 and await save_complaint(db, request_id, user.id, category, text))
         admins = [item.telegram_id for item in await get_all_users(db) if item.role == "admin"] if saved else []
+        if saved and user:
+            request = await get_repair_request(db, request_id)
+            requests = await get_user_requests(db, user.id)
+            rating_score, has_complaint = await get_feedback_state(db, request_id)
+        else:
+            request, requests, rating_score, has_complaint = None, [], None, False
     await state.clear()
     if saved:
+        prompt_chat_id = data.get("complaint_prompt_chat_id")
+        prompt_message_id = data.get("complaint_prompt_message_id")
+        if isinstance(prompt_chat_id, int) and isinstance(prompt_message_id, int):
+            try:
+                await message.bot.delete_message(prompt_chat_id, prompt_message_id)
+            except TelegramAPIError:
+                logger.info("Не удалось удалить запрос описания жалобы.")
         for telegram_id in admins:
             try:
                 await message.bot.send_message(telegram_id, f"Жалоба по заявке №{request_id}\nКатегория: {category}\n\n{text}")
             except TelegramAPIError:
                 logger.info("Не удалось доставить жалобу администратору.")
-    await message.answer("Жалоба отправлена администраторам." if saved else "Не удалось отправить жалобу: срок истёк, заявка не завершена или жалоба уже есть.")
+    if not saved or request is None:
+        await message.answer("Не удалось отправить жалобу: срок истёк, заявка не завершена или жалоба уже есть.")
+        return
+    page = next((index for index, item in enumerate(requests) if item.id == request.id), 0)
+    _, total_pages = bounded_page(page, len(requests))
+    markup = client_request_keyboard(
+        request,
+        telegram_id=telegram_id,
+        page=page,
+        total_pages=total_pages,
+        role=user.role,
+        rating_score=rating_score,
+        has_complaint=has_complaint,
+    )
+    screen_chat_id = data.get("feedback_screen_chat_id")
+    screen_message_id = data.get("feedback_screen_message_id")
+    if isinstance(screen_chat_id, int) and isinstance(screen_message_id, int):
+        await safe_edit_message(
+            message.bot,
+            screen_chat_id,
+            screen_message_id,
+            client_request_text(request),
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
+    await message.answer(
+        f"✅ Жалоба отправлена администраторам.\n\n{client_request_text(request)}",
+        reply_markup=markup,
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("request:ai:"))

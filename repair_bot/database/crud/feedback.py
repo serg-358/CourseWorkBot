@@ -10,6 +10,13 @@ from repair_bot.database.models import RepairComplaint, RepairRating, RequestAss
 COMPLAINT_CATEGORIES = {"quality", "timing", "price", "communication", "other"}
 
 
+async def get_feedback_state(db: AsyncSession, request_id: int) -> tuple[int | None, bool]:
+    """Возвращает оценку и признак уже отправленной жалобы по заявке."""
+    rating = await db.get(RepairRating, request_id)
+    complaint = await db.get(RepairComplaint, request_id)
+    return (rating.score if rating else None, complaint is not None)
+
+
 async def save_rating(db: AsyncSession, request_id: int, user_id: int, score: int, comment: str = "") -> bool:
     request = await db.get(RepairRequest, request_id)
     if not request or request.user_id != user_id or request.status != "completed" or not 1 <= score <= 5 or await db.get(RepairRating, request_id):

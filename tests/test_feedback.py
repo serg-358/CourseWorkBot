@@ -36,3 +36,12 @@ async def test_complaint_is_rejected_after_week(db_session):
     await db_session.commit()
 
     assert not await save_complaint(db_session, item.id, client.id, "quality", "Слишком поздно")
+
+
+@pytest.mark.asyncio
+async def test_complaint_without_description_is_allowed_except_other(db_session):
+    client = await create_user(db_session, "83001", "Клиент", "+79990000004")
+    item = await create_repair_request(db_session, client.id, "Не работает экран")
+    await update_request_status(db_session, item.id, "completed")
+
+    assert await save_complaint(db_session, item.id, client.id, "quality", "")
