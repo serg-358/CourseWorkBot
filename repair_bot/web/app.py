@@ -1220,7 +1220,7 @@ def dashboard_content(request: Request, user: User, role: str, items: list[Repai
         rows.append({"id": item.id, "description": item.description[:140], "status": item.status,
                      "status_label": STATUSES.get(item.status, "Неизвестен"), "priority": selected_priority(item),
                      "priority_label": PRIORITIES.get(selected_priority(item), "Средний"),
-                     "date": item.created_at.strftime("%d.%m.%Y"),
+                     "date": moscow_datetime(item.created_at).strftime("%d.%m.%Y"),
                      "price": format_rubles(price) if price is not None else "Уточняется",
                      "owner": item.user.full_name if role != "client" else "",
                      "url": f"/requests/{item.id}" + (f"?view={preview}" if preview else "")})

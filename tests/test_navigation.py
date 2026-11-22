@@ -76,8 +76,10 @@ def test_ai_assessment_text_is_split_into_readable_blocks():
 
 def test_request_title_includes_creation_date():
     request = SimpleNamespace(id=42, created_at=datetime(2026, 11, 22))
+    after_moscow_midnight = SimpleNamespace(id=43, created_at=datetime(2026, 11, 22, 21, 30))
 
     assert request_title(request) == "Заявка №42 от 22.11.2026"
+    assert request_title(after_moscow_midnight) == "Заявка №43 от 23.11.2026"
 
 
 def test_client_card_adds_urgency_fee_to_estimate_and_keeps_it_separate():

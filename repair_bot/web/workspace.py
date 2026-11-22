@@ -1,6 +1,7 @@
 """Представления рабочих разделов и сортировка заявок без изменения прав."""
 
 from repair_bot.services.request_priority import selected_priority
+from repair_bot.services.admin_dashboard import moscow_datetime
 
 import html
 from datetime import date
@@ -107,7 +108,7 @@ def requests_table(items: list[RepairRequest], staff: bool = False, view: str = 
         owner = f"<td>{html.escape(item.user.full_name)}</td>" if staff else ""
         price = request_price(item)
         price_text = format_rubles(price) if price is not None else "Уточняется"
-        rows.append(f"<tr><td><a href='{detail}'>№{item.id}</a></td>{owner}<td><a href='{detail}'>{html.escape(item.description[:100])}</a></td><td>{STATUSES.get(item.status, 'Неизвестен')}</td><td>{PRIORITIES.get(selected_priority(item), 'Средний')}</td><td>{item.created_at:%d.%m.%Y}</td><td class='price-cell'>{price_text}</td><td><a href='{detail}'>Открыть →</a></td></tr>")
+        rows.append(f"<tr><td><a href='{detail}'>№{item.id}</a></td>{owner}<td><a href='{detail}'>{html.escape(item.description[:100])}</a></td><td>{STATUSES.get(item.status, 'Неизвестен')}</td><td>{PRIORITIES.get(selected_priority(item), 'Средний')}</td><td>{moscow_datetime(item.created_at):%d.%m.%Y}</td><td class='price-cell'>{price_text}</td><td><a href='{detail}'>Открыть →</a></td></tr>")
     headers = heading("Номер", "id") + ("<th>Клиент</th>" if staff else "") + "<th>Описание</th>" + heading("Статус", "status") + heading("Приоритет", "priority") + heading("Создана", "date") + heading("Предварительный итог", "price") + "<th></th>"
     table = f"<div class='table-wrap'><table><thead><tr>{headers}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>" if rows else "<p class='card'>По выбранным условиям заявок нет.</p>"
     return filters + f"<p class='muted'>Найдено: {len(filtered)} · Цена включает выбранную доплату за срочность.</p>" + table

@@ -17,6 +17,7 @@ from repair_bot.keyboards.requests import format_surcharge
 from repair_bot.services.pricing.request_total import final_total, certificate_discount
 from repair_bot.services.ai.budget import ai_access_notice
 from repair_bot.services.staff_assessment import effective_staff_details
+from repair_bot.services.admin_dashboard import moscow_datetime
 from repair_bot.database.models import RepairRequest
 
 logger = logging.getLogger("repair_bot.handlers")
@@ -215,7 +216,7 @@ def client_request_text(request: RepairRequest) -> str:
 def request_title(request: RepairRequest) -> str:
     """Возвращает номер заявки с датой её создания для карточек интерфейса."""
     created_at = getattr(request, "created_at", None)
-    date_label = created_at.strftime("%d.%m.%Y") if created_at else "—"
+    date_label = moscow_datetime(created_at).strftime("%d.%m.%Y") if created_at else "—"
     return f"Заявка №{request.id} от {date_label}"
 
 def format_rubles(kopecks: int | None) -> str:
