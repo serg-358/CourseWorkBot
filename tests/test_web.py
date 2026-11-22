@@ -1,9 +1,12 @@
 import hashlib
 import re
+from datetime import datetime
+from io import BytesIO
 from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 import repair_bot.web.app as web_app
@@ -15,6 +18,7 @@ from repair_bot.database.models import (
     RequestAddress,
     RequestUrgency,
     RepairRequest,
+    RequestLifecycle,
     User,
     WebsiteAccount,
 )
@@ -285,6 +289,36 @@ def test_password_hash_uses_scrypt_and_checks_correct_password():
     assert password_hash.startswith("scrypt$")
     assert web_app.verify_password("strong-password-123", password_hash)
     assert not web_app.verify_password("wrong-password", password_hash)
+
+
+@pytest.mark.asyncio
+async def test_admin_analytics_exports_moscow_dashboard_data(db_session_factory, monkeypatch):
+    monkeypatch.setattr(web_app, "SessionLocal", db_session_factory)
+    async with db_session_factory() as db:
+        admin = User(telegram_id="99901", full_name="Admin", phone="+79990000001", role="admin")
+        owner = User(telegram_id="99902", full_name="Client", phone="+79990000002", role="client")
+        db.add_all([admin, owner])
+        await db.flush()
+        first = RepairRequest(user_id=owner.id, description="Late UTC", created_at=datetime(2026, 11, 21, 21, 30))
+        second = RepairRequest(user_id=owner.id, description="Moscow day", created_at=datetime(2026, 11, 22, 12))
+        db.add_all([first, second])
+        await db.flush()
+        db.add(RequestLifecycle(request_id=second.id, deleted_at=datetime(2026, 11, 22, 13)))
+        db.add(WebsiteAccount(user_id=admin.id, email="analytics@example.test", password_hash=web_app.hash_password("test-pass-123")))
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=web_app.app), base_url="http://testserver") as client:
+        login_page = await client.get("/login")
+        csrf = re.search(r"name='csrf' value='([^']+)'", login_page.text).group(1)
+        await client.post("/login", data={"csrf": csrf, "email": "analytics@example.test", "password": "test-pass-123"})
+        page = await client.get("/admin/analytics?period=7")
+        assert "Скачать XLSX" in page.text
+        assert "Всё время" in page.text
+        export = await client.get("/admin/analytics/export?period=7")
+
+    assert export.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
+    workbook = load_workbook(BytesIO(export.content))
+    assert workbook["Сводка"]["B4"].value == 1
 
 
 @pytest.mark.asyncio

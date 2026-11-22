@@ -242,7 +242,7 @@ async def test_admin_complaints_screen_shows_empty_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_admin_dashboard_sends_visualization(monkeypatch):
+async def test_admin_dashboard_updates_detailed_message_without_chart(monkeypatch):
     class Session:
         async def __aenter__(self):
             return self
@@ -267,11 +267,8 @@ async def test_admin_dashboard_sends_visualization(monkeypatch):
     monkeypatch.setattr(admin, "get_all_users", AsyncMock(return_value=[]))
     monkeypatch.setattr(admin, "get_all_requests", AsyncMock(return_value=[request]))
     monkeypatch.setattr(admin, "list_complaints", AsyncMock(return_value=[]))
-    chart_message = SimpleNamespace(chat=SimpleNamespace(id=100), message_id=201)
     message = SimpleNamespace(
-        bot=SimpleNamespace(delete_message=AsyncMock()),
         edit_text=AsyncMock(),
-        answer_photo=AsyncMock(return_value=chart_message),
     )
     callback = SimpleNamespace(
         data="menu:dashboard:7",
@@ -288,11 +285,38 @@ async def test_admin_dashboard_sends_visualization(monkeypatch):
     await admin.show_dashboard(callback, state)
 
     assert "Дашборд мастерской" in message.edit_text.await_args.args[0]
-    message.answer_photo.assert_awaited_once()
-    state.update_data.assert_awaited_once_with(
-        dashboard_chart_chat_id=100,
-        dashboard_chart_message_id=201,
+    assert "Заявки по интервалам" in message.edit_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_exports_xlsx_document(monkeypatch):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def scalars(self, *_):
+            return SimpleNamespace(all=lambda: [])
+
+    request = SimpleNamespace(status="new", priority="low", created_at=datetime(2026, 11, 22))
+    monkeypatch.setattr(admin, "SessionLocal", Session)
+    monkeypatch.setattr(admin, "get_user_by_telegram_id", AsyncMock(return_value=SimpleNamespace(role="admin")))
+    monkeypatch.setattr(admin, "get_all_requests", AsyncMock(side_effect=[[request], []]))
+    monkeypatch.setattr(admin, "list_complaints", AsyncMock(return_value=[]))
+    message = SimpleNamespace(answer_document=AsyncMock())
+    callback = SimpleNamespace(
+        data="menu:dashboard:export:7",
+        from_user=SimpleNamespace(id=55),
+        message=message,
+        answer=AsyncMock(),
     )
+
+    await admin.export_dashboard(callback)
+
+    callback.answer.assert_awaited_once_with("Готовлю XLSX…")
+    message.answer_document.assert_awaited_once()
 
 
 @pytest.mark.asyncio

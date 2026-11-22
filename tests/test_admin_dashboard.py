@@ -1,10 +1,13 @@
 from datetime import datetime
+from io import BytesIO
 from types import SimpleNamespace
 
-from repair_bot.services.admin_dashboard import build_dashboard_data, render_dashboard_chart
+from openpyxl import load_workbook
+
+from repair_bot.services.admin_dashboard import build_dashboard_data, build_dashboard_xlsx
 
 
-def test_dashboard_data_filters_period_and_renders_png():
+def test_dashboard_data_filters_period_and_exports_xlsx():
     requests = [
         SimpleNamespace(status="new", priority="low", created_at=datetime(2026, 11, 20)),
         SimpleNamespace(status="completed", priority="high", created_at=datetime(2026, 11, 22)),
@@ -13,7 +16,7 @@ def test_dashboard_data_filters_period_and_renders_png():
     complaints = [SimpleNamespace(category="quality", created_at=datetime(2026, 11, 22))]
 
     dashboard = build_dashboard_data(requests, ratings, complaints, "7")
-    image = render_dashboard_chart(dashboard)
+    workbook = load_workbook(BytesIO(build_dashboard_xlsx(dashboard)))
 
     assert dashboard.request_count == 2
     assert dashboard.status_counts == {
@@ -26,7 +29,14 @@ def test_dashboard_data_filters_period_and_renders_png():
     assert dashboard.complaint_counts["quality"] == 1
     assert dashboard.timeline_labels == ["16.11", "17.11", "18.11", "19.11", "20.11", "21.11", "22.11"]
     assert dashboard.timeline_counts == [0, 0, 0, 0, 1, 0, 1]
-    assert image.startswith(b"\x89PNG")
+    assert workbook.sheetnames == [
+        "Сводка",
+        "Заявки по интервалам",
+        "Статусы",
+        "Срочность",
+        "Оценки",
+        "Жалобы",
+    ]
 
 
 def test_dashboard_groups_long_period_into_at_most_seven_real_intervals():
@@ -39,3 +49,26 @@ def test_dashboard_groups_long_period_into_at_most_seven_real_intervals():
 
     assert len(dashboard.timeline_labels) <= 7
     assert sum(dashboard.timeline_counts) == 2
+
+
+def test_dashboard_uses_moscow_dates_and_includes_trash():
+    requests = [
+        SimpleNamespace(
+            status="new",
+            priority="low",
+            created_at=datetime(2026, 11, 21, 21, 30),
+            lifecycle=None,
+        ),
+        SimpleNamespace(
+            status="completed",
+            priority="high",
+            created_at=datetime(2026, 11, 22, 12),
+            lifecycle=SimpleNamespace(deleted_at=datetime(2026, 11, 22, 13)),
+        ),
+    ]
+
+    dashboard = build_dashboard_data(requests, [], [], "7")
+
+    assert dashboard.period_end.isoformat() == "2026-11-22"
+    assert dashboard.timeline_counts[-1] == 2
+    assert dashboard.trash_count == 1

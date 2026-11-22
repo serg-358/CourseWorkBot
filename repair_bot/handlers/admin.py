@@ -4,7 +4,6 @@ import html
 from math import ceil
 
 from aiogram import F
-from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
@@ -14,7 +13,11 @@ from repair_bot.database.crud.users import get_all_users, get_user_by_telegram_i
 from repair_bot.database.models import RepairRating
 from repair_bot.database.session import SessionLocal
 from repair_bot.keyboards import main_menu_keyboard
-from repair_bot.services.admin_dashboard import build_dashboard_data, render_dashboard_chart
+from repair_bot.services.admin_dashboard import (
+    build_dashboard_data,
+    build_dashboard_xlsx,
+    dashboard_message,
+)
 from repair_bot.handlers.common import (
     _demo_view_roles,
     edit_callback_screen,
@@ -49,7 +52,13 @@ def dashboard_keyboard(telegram_id: int, period: str) -> InlineKeyboardMarkup:
         for value, label in labels
     ]
     menu = menu_for_user(telegram_id, "admin")
-    return InlineKeyboardMarkup(inline_keyboard=[periods, *menu.inline_keyboard])
+    export = [
+        InlineKeyboardButton(
+            text="⬇️ Скачать XLSX",
+            callback_data=f"menu:dashboard:export:{period}",
+        )
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[periods, export, *menu.inline_keyboard])
 
 @router.callback_query(F.data.startswith("menu:users"))
 async def show_users(callback: CallbackQuery, state: FSMContext) -> None:
@@ -131,6 +140,29 @@ async def show_administrators(callback: CallbackQuery, state: FSMContext) -> Non
             parse_mode="HTML",
         )
 
+@router.callback_query(F.data.startswith("menu:dashboard:export:"))
+async def export_dashboard(callback: CallbackQuery) -> None:
+    """Отправляет администратору XLSX-выгрузку выбранного периода."""
+    if callback.from_user is None:
+        return
+    period = (callback.data or "").rsplit(":", 1)[-1]
+    period = period if period in DASHBOARD_PERIODS else "7"
+    async with SessionLocal() as db:
+        admin = await get_user_by_telegram_id(db, str(callback.from_user.id))
+        if admin is None or admin.role != "admin":
+            await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
+            return
+        requests = await get_all_requests(db) + await get_all_requests(db, trash=True)
+        complaints = await list_complaints(db)
+        ratings = list((await db.scalars(select(RepairRating))).all())
+    await callback.answer("Готовлю XLSX…")
+    if callback.message:
+        await callback.message.answer_document(
+            BufferedInputFile(build_dashboard_xlsx(build_dashboard_data(requests, ratings, complaints, period)), filename=f"dashboard-{period}.xlsx"),
+            caption=f"Статистика дашборда · {period}.",
+        )
+
+
 @router.callback_query(F.data.startswith("menu:dashboard"))
 @router.callback_query(F.data == "menu:statistics")
 async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
@@ -138,7 +170,6 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.from_user is None:
         await callback.answer("🔒 Этот раздел доступен только администратору.", show_alert=True)
         return
-    previous_data = await state.get_data()
     await state.clear()
     period = (callback.data or "").rsplit(":", 1)[-1]
     period = period if period in DASHBOARD_PERIODS else "7"
@@ -149,7 +180,7 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
             users = None
         else:
             users = await get_all_users(db)
-            requests = await get_all_requests(db)
+            requests = await get_all_requests(db) + await get_all_requests(db, trash=True)
             complaints = await list_complaints(db)
             ratings = list((await db.scalars(select(RepairRating))).all())
 
@@ -164,41 +195,16 @@ async def show_dashboard(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message:
         await edit_callback_screen(
             callback,
-            f"📊 <b>Дашборд мастерской</b> · {dashboard.label}\n\n"
-            f"👥 Пользователи: {len(users)}\n"
-            f"   Клиенты: {clients} · Мастера: {sum(user.role == 'master' for user in users)}\n"
-            f"   Администраторы: {admins}\n\n"
-            f"🧾 Заявки: {dashboard.request_count}\n"
-            f"   Новые: {dashboard.status_counts['new']} · В работе: {dashboard.status_counts['in_progress']}\n"
-            f"   Завершены: {dashboard.status_counts['completed']} · Отменены: {dashboard.status_counts['cancelled']}\n"
-            f"   Обычные: {dashboard.priority_counts['low']} · Срочные: {dashboard.priority_counts['medium']} · Критические: {dashboard.priority_counts['high']}\n\n"
-            f"⭐ Средняя оценка: {f'{dashboard.average_rating:.1f}' if dashboard.average_rating is not None else '—'}\n"
-            f"⚠️ Жалобы: {sum(dashboard.complaint_counts.values())}",
+            dashboard_message(
+                dashboard,
+                users_total=len(users),
+                clients=clients,
+                masters=sum(user.role == "master" for user in users),
+                admins=admins,
+            ),
             reply_markup=dashboard_keyboard(callback.from_user.id, period),
             parse_mode="HTML",
         )
-        previous_chat_id = previous_data.get("dashboard_chart_chat_id")
-        previous_message_id = previous_data.get("dashboard_chart_message_id")
-        if isinstance(previous_chat_id, int) and isinstance(previous_message_id, int):
-            try:
-                await callback.message.bot.delete_message(previous_chat_id, previous_message_id)
-            except TelegramAPIError:
-                logger.info("Не удалось удалить предыдущую диаграмму дашборда.")
-        try:
-            chart_message = await callback.message.answer_photo(
-                BufferedInputFile(render_dashboard_chart(dashboard), filename="dashboard.png"),
-                caption=(
-                    f"📈 {dashboard.label}: заявки по дням, статусы, оценки и жалобы.\n"
-                    "График жалоб: качество · сроки · стоимость · общение · другое."
-                ),
-            )
-        except (OSError, TelegramAPIError):
-            logger.info("Не удалось отправить диаграмму дашборда.")
-        else:
-            await state.update_data(
-                dashboard_chart_chat_id=chart_message.chat.id,
-                dashboard_chart_message_id=chart_message.message_id,
-            )
 
 
 show_statistics = show_dashboard

@@ -17,9 +17,8 @@ import time
 import sys
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
-from math import ceil
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -88,6 +87,13 @@ from repair_bot.database.crud.ai_access import get_wallet, available_analyses
 from repair_bot.services.request_photos import read_photo_form, normalize_photo, save_web_photo, read_web_photo, discard_web_photo
 from repair_bot.database.crud.request_lifecycle import set_request_photo
 from repair_bot.web.admin_tools import register_admin_tools, transfer_controls, request_tabs, trash_control
+from repair_bot.services.admin_dashboard import (
+    build_dashboard_data,
+    build_dashboard_xlsx,
+    dashboard_buckets,
+    dashboard_period,
+    moscow_day,
+)
 
 from repair_bot.web.workspace import requests_table, profile_content, feedback_content, request_price, STATUSES, PRIORITIES, service_catalog
 
@@ -473,37 +479,35 @@ def create_app() -> FastAPI:
             account, user = await identity(request, db)
             if account is None or user is None or user.role != "admin":
                 return forbidden_page(request)
-            items = await get_all_requests(db)
+            items = await get_all_requests(db) + await get_all_requests(db, trash=True)
             complaints = await list_complaints(db)
             completions = {row.request_id: row.completed_at for row in (await db.scalars(select(RequestCompletion))).all()}
             ratings = {row.request_id: row for row in (await db.scalars(select(RepairRating))).all()}
             assignments = {row.request_id: row for row in (await db.scalars(select(RequestAssignment))).all()}
-        last_day = max((item.created_at.date() for item in items), default=date.today())
         shortcut_period = request.query_params.get("period", "")
-        if shortcut_period == "all":
-            period_start = min((item.created_at.date() for item in items), default=last_day)
-            period_end = last_day
-        elif shortcut_period in {"7", "30"}:
-            period_end = last_day
-            period_start = period_end - timedelta(days=int(shortcut_period) - 1)
+        if shortcut_period not in {"7", "30", "all"}:
+            try:
+                manual_end = date.fromisoformat(request.query_params.get("to", ""))
+            except ValueError:
+                manual_end = None
+            try:
+                manual_start = date.fromisoformat(request.query_params.get("from", ""))
+            except ValueError:
+                manual_start = None
+            if manual_end is None:
+                manual_end = dashboard_period(items)[1]
+            if manual_start is None:
+                manual_start = manual_end - timedelta(days=6)
+            period_start, period_end, _period_label = dashboard_period(items, start=manual_start, end=manual_end)
         else:
-            try:
-                period_end = date.fromisoformat(request.query_params.get("to", ""))
-            except ValueError:
-                period_end = last_day
-            try:
-                period_start = date.fromisoformat(request.query_params.get("from", ""))
-            except ValueError:
-                period_start = period_end - timedelta(days=6)
-        if period_start > period_end:
-            period_start, period_end = period_end, period_start
+            period_start, period_end, _period_label = dashboard_period(items, shortcut_period)
         span = (period_end - period_start).days + 1
-        selected = [item for item in items if period_start <= item.created_at.date() <= period_end]
-        completed = [item for item in items if item.status == "completed" and period_start <= completions.get(item.id, item.created_at).date() <= period_end]
+        selected = [item for item in items if period_start <= moscow_day(item.created_at) <= period_end]
+        completed = [item for item in items if item.status == "completed" and period_start <= moscow_day(completions.get(item.id, item.created_at)) <= period_end]
         revenue = sum(request_price(item) or 0 for item in completed)
         previous_start, previous_end = period_start - timedelta(days=span), period_start - timedelta(days=1)
-        previous = [item for item in items if previous_start <= item.created_at.date() <= previous_end]
-        previous_revenue = sum(request_price(item) or 0 for item in items if item.status == "completed" and previous_start <= completions.get(item.id, item.created_at).date() <= previous_end)
+        previous = [item for item in items if previous_start <= moscow_day(item.created_at) <= previous_end]
+        previous_revenue = sum(request_price(item) or 0 for item in items if item.status == "completed" and previous_start <= moscow_day(completions.get(item.id, item.created_at)) <= previous_end)
         counts = {status: sum(item.status == status for item in selected) for status in STATUSES}
         client_counts = {}
         for item in selected:
@@ -513,16 +517,9 @@ def create_app() -> FastAPI:
         for item in completed:
             client_revenue[item.user.full_name] = client_revenue.get(item.user.full_name, 0) + (request_price(item) or 0)
         top_revenue_clients = sorted(client_revenue.items(), key=lambda row: row[1], reverse=True)[:5]
-        bucket_days = max(1, ceil(span / 7))
-        buckets = []
-        bucket_start = period_start
-        while bucket_start <= period_end:
-            bucket_end = min(bucket_start + timedelta(days=bucket_days - 1), period_end)
-            label = bucket_start.strftime("%d.%m") if bucket_start == bucket_end else f"{bucket_start:%d.%m}–{bucket_end:%d.%m}"
-            buckets.append((bucket_start, bucket_end, label))
-            bucket_start = bucket_end + timedelta(days=1)
-        daily = [sum(start <= item.created_at.date() <= end for start, end, _label in buckets) for item in selected]
-        daily_revenue = [sum((request_price(item) or 0) for item in completed if start <= completions.get(item.id, item.created_at).date() <= end) for start, end, _label in buckets]
+        buckets = dashboard_buckets(period_start, period_end)
+        daily = [sum(start <= moscow_day(item.created_at) <= end for start, end, _label in buckets) for item in selected]
+        daily_revenue = [sum((request_price(item) or 0) for item in completed if start <= moscow_day(completions.get(item.id, item.created_at)) <= end) for start, end, _label in buckets]
         maximum = max(daily, default=1) or 1
         bars = "".join(f"<div class='analytics-bar'><b style='height:{max(8, count * 100 / maximum):.0f}%'></b><span>{label}</span><small>{count}</small></div>" for (_start, _end, label), count in zip(buckets, daily))
         revenue_max = max(daily_revenue, default=1) or 1
@@ -543,7 +540,7 @@ def create_app() -> FastAPI:
         rating_distribution = {score: sum(row.score == score for row in rating_rows) for score in range(1, 6)}
         rating_max = max(rating_distribution.values(), default=1) or 1
         rating_chart = "".join(f"<div class='analytics-bar rating'><b style='height:{max(8, count * 100 / rating_max):.0f}%'></b><span>{score} ★</span><small>{count}</small></div>" for score, count in rating_distribution.items())
-        complaints = [row for row in complaints if period_start <= row.created_at.date() <= period_end]
+        complaints = [row for row in complaints if period_start <= moscow_day(row.created_at) <= period_end]
         complaint_labels = {"quality": "Качество", "timing": "Сроки", "price": "Стоимость", "communication": "Общение", "other": "Другое"}
         complaint_counts = {key: sum(row.category == key for row in complaints) for key in complaint_labels}
         complaint_max = max(complaint_counts.values(), default=1) or 1
@@ -568,9 +565,10 @@ def create_app() -> FastAPI:
         def comparison(current: int, previous_value: int) -> str:
             return "—" if not previous_value else f"{(current - previous_value) * 100 / previous_value:+.0f}%"
         period_links = " ".join(f"<a class='{'active' if shortcut_period == value else ''}' href='/admin/analytics?period={value}'>{label}</a>" for value, label in (("7", "7 дней"), ("30", "30 дней"), ("all", "Всё время")))
+        export_query = urlencode({"period": shortcut_period}) if shortcut_period else urlencode({"from": period_start.isoformat(), "to": period_end.isoformat()})
         period_caption = "По дням" if len(buckets) == span else "По интервалам"
         content = ("<section class='dashboard-heading'><div><h1>Аналитика мастерской</h1><p>Визуальная сводка по спросу, финансам и качеству работы.</p></div>"
-                   f"<form class='analytics-period' method='get'><nav class='analytics-period-shortcuts'>{period_links}</nav><label>С<input type='date' name='from' value='{period_start}'></label><label>По<input type='date' name='to' value='{period_end}'></label><button>Показать</button></form></section>"
+                   f"<form class='analytics-period' method='get'><nav class='analytics-period-shortcuts'>{period_links}</nav><label>С<input type='date' name='from' value='{period_start}'></label><label>По<input type='date' name='to' value='{period_end}'></label><button>Показать</button><a class='button secondary' href='/admin/analytics/export?{html.escape(export_query, quote=True)}'>Скачать XLSX</a></form></section>"
                    f"<div class='dashboard-metrics'><a href='/admin/requests' class='metric-tile'><span>Все заявки</span><strong>{len(selected)}</strong><small>{comparison(len(selected), len(previous))} к прошлому периоду</small></a><div class='metric-tile'><span>Завершены</span><strong>{len(completed)}</strong></div><div class='metric-tile'><span>Выручка</span><strong>{format_rubles(revenue)}</strong><small>{comparison(revenue, previous_revenue)} к прошлому периоду</small></div><a href='/admin/complaints' class='metric-tile'><span>Жалобы</span><strong>{len(complaints)}</strong></a></div>"
                    f"<div class='analytics-secondary'><article><span>Средний чек</span><strong>{format_rubles(avg_check)}</strong></article><article><span>Отмены</span><strong>{cancellation_rate:.0f}%</strong></article><article><span>Средняя оценка</span><strong>{average_rating}</strong></article><article><span>Ответы клиентов</span><strong>{len(rating_rows) * 100 / max(len(completed), 1):.0f}%</strong></article></div>"
                    + f"<div class='analytics-grid'><section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Заявки {period_caption.lower()}</h2><span class='panel-caption'>По дате создания</span></div><div class='analytics-bars' style='--analytics-columns:{len(buckets)}'>" + bars + "</div></section>"
@@ -583,6 +581,42 @@ def create_app() -> FastAPI:
                    + "<section class='dashboard-panel'><h2>Клиенты по выручке</h2><ol class='analytics-clients'>" + "".join(f"<li><span>{html.escape(name)}</span><b>{format_rubles(amount)}</b></li>" for name, amount in top_revenue_clients) + "</ol></section>"
                    + "<section class='dashboard-panel analytics-wide'><div class='panel-title'><h2>Эффективность мастеров</h2><span class='panel-caption'>Завершённые работы за период</span></div><div class='table-wrap'><table><thead><tr><th>Мастер</th><th>Ремонты</th><th>Выручка</th><th>Оценка</th><th>Жалобы</th></tr></thead><tbody>" + master_rows + "</tbody></table></div></section></div>")
         return render_page(request, "Аналитика", content)
+
+    @app.get("/admin/analytics/export")
+    async def export_admin_analytics(request: Request) -> Response:
+        """Скачивает XLSX со статистикой за тот же период, что выбран в ЛК."""
+        shortcut_period = request.query_params.get("period", "")
+        try:
+            manual_start = date.fromisoformat(request.query_params.get("from", ""))
+            manual_end = date.fromisoformat(request.query_params.get("to", ""))
+        except ValueError:
+            manual_start = manual_end = None
+        async with SessionLocal() as db:
+            account, user = await identity(request, db)
+            if account is None or user is None or user.role != "admin":
+                return forbidden_page(request)
+            items = await get_all_requests(db) + await get_all_requests(db, trash=True)
+            complaints = await list_complaints(db)
+            ratings = list((await db.scalars(select(RepairRating))).all())
+        if shortcut_period in {"7", "30", "all"}:
+            dashboard = build_dashboard_data(items, ratings, complaints, shortcut_period)
+        else:
+            dashboard = build_dashboard_data(
+                items,
+                ratings,
+                complaints,
+                start=manual_start,
+                end=manual_end,
+            )
+        return Response(
+            build_dashboard_xlsx(dashboard),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": "attachment; filename=dashboard-statistics.xlsx",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/admin/complaints", response_class=HTMLResponse)
     async def admin_complaints(request: Request) -> Response:
